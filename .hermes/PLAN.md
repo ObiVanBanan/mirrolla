@@ -145,6 +145,8 @@ Plan → interrupt(approve/revise/reject) → executor → reporter → answer
 | **Should** | revise: менеджер правит период / product_code → пересобрать план |
 | **Could** | reject: отменить анализ без выполнения |
 
+| **Статус** | ✅ Готово |
+
 ---
 
 ### M6 — API (FastAPI)
@@ -166,6 +168,8 @@ POST /api/v1/reports/management → авто-отчёт
 | **Must** | 5 эндпоинтов: analyses (create, get, approve, revise, reject) |
 | **Should** | `POST /api/v1/reports/management` — fixed workflow авто-отчёта |
 | **Could** | `POST /api/v1/sync/1c` — синхронизация из 1С по кнопке |
+
+| **Статус** | ✅ Готово |
 
 ---
 

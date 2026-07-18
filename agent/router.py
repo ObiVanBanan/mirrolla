@@ -86,7 +86,9 @@ SYSTEM_PROMPT = """Ты — маршрутизатор аналитическо�
 """
 
 # === Regex для извлечения кодов товаров ===
-CODE_PATTERN = re.compile(r"[ЦФ]Р-\d{8}")
+# Коды товаров: ЦБ-XXXXXXXX (Косметика/БАД) или ФР-XXXXXXXX (Фармация)
+# ВАЖНО: ЦБ (буквы Б), НЕ ЦР (буква Р). Regex (ЦБ|ФР)-\d{8}
+CODE_PATTERN = re.compile(r"(?:ЦБ|ФР)-\d{8}")
 
 # === Keyword fallback ===
 
@@ -183,16 +185,41 @@ async def route(text: str) -> RoutingResult:
 
 
 def route_sync(text: str) -> RoutingResult:
-    """Синхронная обёртка для CLI."""
-    import asyncio
+    """Синхронная обёртка для CLI и API.
+
+    Безопасна для вызова из async event loop (FastAPI) —
+    вызывает sync-путь напрямую, без event loop манипуляций.
+    """
+    return _route_sync_impl(text)
+
+
+def _route_sync_impl(text: str) -> RoutingResult:
+    """Синхронная маршрутизация — работает в любом контексте."""
+    if not API_KEY:
+        print("  [Router] ⚠ API ключ не найден, использую keyword-fallback")
+        return _keyword_fallback(text)
 
     try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+        from langchain_openai import ChatOpenAI
 
-    return loop.run_until_complete(route(text))
+        llm = ChatOpenAI(
+            model=MODEL_NAME,
+            api_key=API_KEY,
+            temperature=0,
+        )
+        structured_llm = llm.with_structured_output(RoutingResult)
+        result = structured_llm.invoke(
+            [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": text},
+            ]
+        )
+        return result
+
+    except Exception as e:
+        print(f"  [Router] ⚠ LLM ошибся: {e}")
+        print("  [Router] → fallback на keyword-классификацию")
+        return _keyword_fallback(text)
 
 
 # === CLI ===
