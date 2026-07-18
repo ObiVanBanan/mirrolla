@@ -1,0 +1,3307 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="dark">
+<title>Mirrolla Intelligence — AI-аналитик маркетплейсов</title>
+<style>
+/* =========================================================
+   MIRROLLA INTELLIGENCE
+   Premium agentic analytics workspace
+   ========================================================= */
+
+:root {
+  --bg: #080b0a;
+  --bg-elevated: #0d1210;
+  --panel: rgba(18, 25, 22, 0.86);
+  --panel-solid: #121916;
+  --panel-2: #18211d;
+  --panel-3: #202b26;
+  --line: rgba(255, 255, 255, 0.075);
+  --line-strong: rgba(255, 255, 255, 0.13);
+  --text: #f5f7f5;
+  --text-soft: #c7d0ca;
+  --muted: #7f8d85;
+  --muted-2: #59665f;
+
+  --lime: #b6f36b;
+  --lime-strong: #91d94f;
+  --lime-soft: rgba(182, 243, 107, 0.11);
+  --gold: #e2bd74;
+  --gold-soft: rgba(226, 189, 116, 0.12);
+  --blue: #77aaf7;
+  --blue-soft: rgba(119, 170, 247, 0.11);
+  --red: #ef7d78;
+  --red-soft: rgba(239, 125, 120, 0.11);
+  --orange: #eead63;
+  --orange-soft: rgba(238, 173, 99, 0.12);
+  --green: #77d59b;
+  --green-soft: rgba(119, 213, 155, 0.11);
+
+  --shadow-lg: 0 32px 80px rgba(0, 0, 0, 0.34);
+  --shadow-md: 0 18px 48px rgba(0, 0, 0, 0.24);
+  --radius-xl: 26px;
+  --radius-lg: 20px;
+  --radius-md: 14px;
+  --radius-sm: 10px;
+  --sidebar-width: 292px;
+  --mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  --sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html {
+  width: 100%;
+  height: 100%;
+  background: var(--bg);
+}
+
+body {
+  width: 100%;
+  min-height: 100%;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+  color: var(--text);
+  background:
+    radial-gradient(circle at 70% -10%, rgba(182, 243, 107, 0.10), transparent 30%),
+    radial-gradient(circle at 5% 100%, rgba(226, 189, 116, 0.07), transparent 32%),
+    linear-gradient(180deg, #0a0d0c 0%, #070908 100%);
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.28;
+  background-image:
+    linear-gradient(rgba(255,255,255,.018) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,.018) 1px, transparent 1px);
+  background-size: 42px 42px;
+  mask-image: linear-gradient(to bottom, black, transparent 72%);
+}
+
+/* === Reusable primitives === */
+
+button,
+textarea,
+input {
+  font: inherit;
+}
+
+button {
+  color: inherit;
+}
+
+.icon {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+}
+
+.icon-sm {
+  width: 15px;
+  height: 15px;
+}
+
+.kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 22px;
+  min-width: 22px;
+  padding: 0 6px;
+  color: var(--muted);
+  background: rgba(255,255,255,.04);
+  border: 1px solid var(--line);
+  border-bottom-color: rgba(255,255,255,.16);
+  border-radius: 6px;
+  font-size: 10px;
+  font-family: var(--mono);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0,0,0,0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* === Application shell === */
+
+.app {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  width: 100%;
+  height: 100vh;
+  height: 100dvh;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* The mobile backdrop must never participate in the desktop grid. */
+.sidebar-backdrop {
+  position: fixed;
+  z-index: 25;
+  inset: 0;
+  display: none;
+  background: rgba(0,0,0,.54);
+  backdrop-filter: blur(4px);
+}
+
+.sidebar-backdrop.visible {
+  display: block;
+}
+
+/* === Sidebar === */
+
+.sidebar {
+  grid-column: 1;
+  grid-row: 1;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: rgba(10, 14, 12, 0.86);
+  border-right: 1px solid var(--line);
+  backdrop-filter: blur(20px);
+  overflow: hidden;
+}
+
+.sidebar::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: -1px;
+  width: 1px;
+  height: 100%;
+  background: linear-gradient(
+    to bottom,
+    transparent,
+    rgba(182, 243, 107, .22) 18%,
+    transparent 50%
+  );
+  opacity: .45;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 22px 20px 18px;
+}
+
+.brand-mark {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+  background:
+    linear-gradient(145deg, rgba(182,243,107,.96), rgba(123,189,68,.92));
+  color: #10160e;
+  box-shadow:
+    0 10px 26px rgba(145, 217, 79, .20),
+    inset 0 1px 0 rgba(255,255,255,.45);
+}
+
+.brand-mark::after {
+  content: "";
+  position: absolute;
+  inset: 4px;
+  border: 1px solid rgba(16, 22, 14, .16);
+  border-radius: 9px;
+}
+
+.brand-copy {
+  min-width: 0;
+}
+
+.brand-name {
+  font-weight: 730;
+  letter-spacing: -0.025em;
+  font-size: 15px;
+}
+
+.brand-subtitle {
+  margin-top: 1px;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: .02em;
+}
+
+.new-analysis-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  width: calc(100% - 32px);
+  margin: 2px 16px 18px;
+  padding: 11px 14px;
+  border: 1px solid rgba(182, 243, 107, .28);
+  border-radius: 12px;
+  color: var(--text);
+  background:
+    linear-gradient(180deg, rgba(182,243,107,.10), rgba(182,243,107,.055));
+  cursor: pointer;
+  transition: .2s ease;
+  font-weight: 620;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.045);
+}
+
+.new-analysis-btn:hover {
+  transform: translateY(-1px);
+  border-color: rgba(182, 243, 107, .48);
+  background:
+    linear-gradient(180deg, rgba(182,243,107,.15), rgba(182,243,107,.08));
+}
+
+.sidebar-section {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.sidebar-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 20px 9px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .11em;
+  text-transform: uppercase;
+}
+
+.history-count {
+  color: var(--muted-2);
+  font-family: var(--mono);
+  letter-spacing: 0;
+}
+
+.chat-history {
+  flex: 1;
+  min-height: 80px;
+  overflow-y: auto;
+  padding: 0 10px 16px;
+}
+
+.history-empty {
+  margin: 8px 8px 0;
+  padding: 16px 14px;
+  color: var(--muted);
+  background: rgba(255,255,255,.018);
+  border: 1px dashed var(--line);
+  border-radius: 12px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.history-item {
+  position: relative;
+  display: grid;
+  grid-template-columns: 30px minmax(0,1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px;
+  margin-bottom: 3px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: .18s ease;
+}
+
+.history-item:hover {
+  background: rgba(255,255,255,.035);
+  border-color: var(--line);
+}
+
+.history-item.active {
+  background:
+    linear-gradient(90deg, rgba(182,243,107,.105), rgba(182,243,107,.025));
+  border-color: rgba(182,243,107,.17);
+}
+
+.history-icon {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  color: var(--muted);
+  background: rgba(255,255,255,.04);
+  border: 1px solid var(--line);
+}
+
+.history-item.active .history-icon {
+  color: var(--lime);
+  background: var(--lime-soft);
+  border-color: rgba(182,243,107,.18);
+}
+
+.history-copy {
+  min-width: 0;
+}
+
+.history-question {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-soft);
+  font-size: 12px;
+  font-weight: 560;
+}
+
+.history-meta {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 2px;
+  color: var(--muted-2);
+  font-size: 10px;
+}
+
+.status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 3px transparent;
+}
+
+.status-dot.done {
+  background: var(--green);
+  box-shadow: 0 0 0 3px rgba(119,213,155,.08);
+}
+
+.status-dot.awaiting_approval,
+.status-dot.awaiting {
+  background: var(--gold);
+  box-shadow: 0 0 0 3px rgba(226,189,116,.08);
+}
+
+.status-dot.executing {
+  background: var(--blue);
+  box-shadow: 0 0 0 3px rgba(119,170,247,.08);
+  animation: pulse-dot 1.6s infinite;
+}
+
+.status-dot.error {
+  background: var(--red);
+}
+
+.status-dot.rejected {
+  background: var(--muted);
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: .45; transform: scale(.82); }
+}
+
+.sidebar-footer {
+  padding: 14px 16px 16px;
+  border-top: 1px solid var(--line);
+  background: rgba(255,255,255,.012);
+}
+
+.connection-label {
+  margin-bottom: 9px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+
+.connection-list {
+  display: grid;
+  gap: 7px;
+}
+
+.connection {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text-soft);
+  font-size: 11px;
+}
+
+.connection-name {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.connection-indicator {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 10px rgba(119,213,155,.55);
+}
+
+.connection-status {
+  color: var(--muted-2);
+  font-family: var(--mono);
+  font-size: 9px;
+}
+
+/* === Main workspace === */
+
+.main {
+  position: relative;
+  grid-column: 2;
+  grid-row: 1;
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.main-header {
+  position: relative;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 70px;
+  padding: 12px 24px;
+  border-bottom: 1px solid var(--line);
+  background: rgba(8, 11, 10, .64);
+  backdrop-filter: blur(18px);
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 12px;
+}
+
+.mobile-menu-btn {
+  display: none;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: rgba(255,255,255,.025);
+  cursor: pointer;
+}
+
+.header-eyebrow {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+
+.header-title-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+
+.main-header .title {
+  min-width: 0;
+  max-width: min(680px, 55vw);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 15px;
+  font-weight: 660;
+  letter-spacing: -.018em;
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.model-pill,
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 32px;
+  padding: 0 11px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  background: rgba(255,255,255,.025);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: .035em;
+}
+
+.model-pill .spark {
+  color: var(--lime);
+}
+
+.status-badge[data-status="awaiting_approval"] {
+  color: var(--gold);
+  border-color: rgba(226,189,116,.22);
+  background: var(--gold-soft);
+}
+
+.status-badge[data-status="executing"] {
+  color: var(--blue);
+  border-color: rgba(119,170,247,.22);
+  background: var(--blue-soft);
+}
+
+.status-badge[data-status="done"] {
+  color: var(--green);
+  border-color: rgba(119,213,155,.22);
+  background: var(--green-soft);
+}
+
+.status-badge[data-status="error"] {
+  color: var(--red);
+  border-color: rgba(239,125,120,.22);
+  background: var(--red-soft);
+}
+
+.workspace {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.content {
+  height: 100%;
+  overflow-y: auto;
+  padding: 30px clamp(20px, 4vw, 56px) 146px;
+  scroll-behavior: smooth;
+}
+
+.content-inner {
+  width: min(1180px, 100%);
+  margin: 0 auto;
+}
+
+/* === Main composer === */
+
+.composer-wrap {
+  position: absolute;
+  z-index: 8;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 22px clamp(20px, 4vw, 56px) 24px;
+  background:
+    linear-gradient(to top, rgba(8,11,10,1) 46%, rgba(8,11,10,.86) 72%, transparent);
+  pointer-events: none;
+}
+
+.composer {
+  position: relative;
+  width: min(900px, 100%);
+  margin: 0 auto;
+  padding: 8px 8px 8px 16px;
+  border: 1px solid rgba(255,255,255,.12);
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, rgba(27,36,32,.94), rgba(18,25,22,.97));
+  box-shadow:
+    0 22px 60px rgba(0,0,0,.38),
+    inset 0 1px 0 rgba(255,255,255,.05);
+  pointer-events: auto;
+  transition: .2s ease;
+}
+
+.composer:focus-within {
+  border-color: rgba(182,243,107,.35);
+  box-shadow:
+    0 24px 70px rgba(0,0,0,.44),
+    0 0 0 4px rgba(182,243,107,.045),
+    inset 0 1px 0 rgba(255,255,255,.06);
+  transform: translateY(-1px);
+}
+
+.composer-main {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.chat-input {
+  width: 100%;
+  max-height: 150px;
+  min-height: 44px;
+  padding: 11px 4px 8px 0;
+  color: var(--text);
+  background: transparent;
+  border: 0;
+  outline: 0;
+  resize: none;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.chat-input::placeholder {
+  color: #66736c;
+}
+
+.send-btn {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 44px;
+  height: 44px;
+  border: 0;
+  border-radius: 13px;
+  color: #12180f;
+  background:
+    linear-gradient(145deg, #c8fa87, #9ee157);
+  cursor: pointer;
+  box-shadow:
+    0 10px 22px rgba(145,217,79,.18),
+    inset 0 1px 0 rgba(255,255,255,.48);
+  transition: .2s ease;
+}
+
+.send-btn:hover {
+  transform: translateY(-1px) scale(1.02);
+  filter: brightness(1.03);
+}
+
+.send-btn:active {
+  transform: translateY(0) scale(.98);
+}
+
+.send-btn:disabled {
+  cursor: not-allowed;
+  opacity: .42;
+  filter: grayscale(.5);
+  transform: none;
+}
+
+.composer-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 1px 50px 2px 0;
+  color: var(--muted-2);
+  font-size: 10px;
+}
+
+.composer-context {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.context-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.context-chip::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--green);
+}
+
+/* === Empty / landing state === */
+
+.empty-state {
+  display: grid;
+  min-height: calc(100vh - 240px);
+  align-content: center;
+  justify-items: center;
+  padding: 22px 0 40px;
+  text-align: center;
+}
+
+.hero-orbit {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 92px;
+  height: 92px;
+  margin-bottom: 24px;
+}
+
+.hero-orbit::before,
+.hero-orbit::after {
+  content: "";
+  position: absolute;
+  border-radius: 50%;
+}
+
+.hero-orbit::before {
+  inset: 0;
+  border: 1px solid rgba(182,243,107,.16);
+  box-shadow: inset 0 0 30px rgba(182,243,107,.03);
+  animation: orbit-rotate 8s linear infinite;
+}
+
+.hero-orbit::after {
+  inset: 12px;
+  border: 1px dashed rgba(226,189,116,.22);
+  animation: orbit-rotate 11s linear reverse infinite;
+}
+
+@keyframes orbit-rotate {
+  to { transform: rotate(360deg); }
+}
+
+.hero-core {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  border-radius: 17px;
+  color: #151d11;
+  background:
+    linear-gradient(145deg, #d5ff9d, #9cdc58);
+  box-shadow:
+    0 18px 40px rgba(145,217,79,.17),
+    inset 0 1px 0 rgba(255,255,255,.55);
+}
+
+.hero-kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 14px;
+  color: var(--lime);
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+}
+
+.hero-kicker::before,
+.hero-kicker::after {
+  content: "";
+  width: 28px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(182,243,107,.55));
+}
+
+.hero-kicker::after {
+  transform: scaleX(-1);
+}
+
+.empty-state h1 {
+  max-width: 820px;
+  font-size: clamp(34px, 5vw, 66px);
+  line-height: .98;
+  letter-spacing: -.055em;
+  font-weight: 690;
+  text-wrap: balance;
+}
+
+.empty-state h1 .gradient-text {
+  color: transparent;
+  background:
+    linear-gradient(110deg, #f3f6f3 20%, #b6f36b 58%, #e2bd74 102%);
+  -webkit-background-clip: text;
+  background-clip: text;
+}
+
+.empty-state > p {
+  max-width: 620px;
+  margin-top: 18px;
+  color: var(--muted);
+  font-size: 14px;
+  text-wrap: balance;
+}
+
+.examples {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  width: min(760px, 100%);
+  margin-top: 34px;
+}
+
+.example-btn {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  min-height: 74px;
+  padding: 14px 16px;
+  overflow: hidden;
+  text-align: left;
+  color: var(--text-soft);
+  background:
+    linear-gradient(180deg, rgba(255,255,255,.035), rgba(255,255,255,.018));
+  border: 1px solid var(--line);
+  border-radius: 15px;
+  cursor: pointer;
+  transition: .22s ease;
+}
+
+.example-btn::after {
+  content: "↗";
+  position: absolute;
+  top: 12px;
+  right: 13px;
+  color: var(--muted-2);
+  font-size: 13px;
+  transition: .2s ease;
+}
+
+.example-btn:hover {
+  transform: translateY(-2px);
+  border-color: rgba(182,243,107,.26);
+  background:
+    linear-gradient(180deg, rgba(182,243,107,.075), rgba(255,255,255,.02));
+  box-shadow: 0 14px 34px rgba(0,0,0,.18);
+}
+
+.example-btn:hover::after {
+  color: var(--lime);
+  transform: translate(2px, -2px);
+}
+
+.example-icon {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 auto;
+  border-radius: 12px;
+  color: var(--lime);
+  background: var(--lime-soft);
+  border: 1px solid rgba(182,243,107,.11);
+}
+
+.example-copy {
+  padding-right: 18px;
+}
+
+.example-title {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.example-subtitle {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.capability-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 25px;
+}
+
+.capability {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 27px;
+  padding: 0 10px;
+  color: var(--muted);
+  background: rgba(255,255,255,.022);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 10px;
+}
+
+.capability svg {
+  color: var(--lime);
+}
+
+/* === Loading === */
+
+.loading-state {
+  width: min(720px, 100%);
+  margin: 13vh auto 0;
+}
+
+.loading-card {
+  padding: 28px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xl);
+  background:
+    linear-gradient(180deg, rgba(24,33,29,.92), rgba(16,22,19,.94));
+  box-shadow: var(--shadow-md);
+}
+
+.loading-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.spinner {
+  position: relative;
+  width: 42px;
+  height: 42px;
+  border-radius: 14px;
+  background: var(--lime-soft);
+  border: 1px solid rgba(182,243,107,.14);
+}
+
+.spinner::before {
+  content: "";
+  position: absolute;
+  inset: 11px;
+  border: 2px solid rgba(182,243,107,.18);
+  border-top-color: var(--lime);
+  border-radius: 50%;
+  animation: spin .8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.loading-title {
+  font-weight: 660;
+  letter-spacing: -.02em;
+}
+
+.loading-copy {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.skeleton-lines {
+  display: grid;
+  gap: 10px;
+  margin-top: 26px;
+}
+
+.skeleton-line {
+  height: 9px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255,255,255,.035);
+}
+
+.skeleton-line::after {
+  content: "";
+  display: block;
+  width: 38%;
+  height: 100%;
+  background:
+    linear-gradient(90deg, transparent, rgba(255,255,255,.07), transparent);
+  animation: shimmer 1.5s infinite;
+}
+
+.skeleton-line:nth-child(2) { width: 82%; }
+.skeleton-line:nth-child(3) { width: 58%; }
+
+@keyframes shimmer {
+  from { transform: translateX(-120%); }
+  to { transform: translateX(340%); }
+}
+
+/* === Workflow / plan === */
+
+.workflow-shell {
+  width: min(1040px, 100%);
+  margin: 0 auto;
+}
+
+.analysis-intro {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 20px;
+}
+
+.analysis-intro-copy {
+  min-width: 0;
+}
+
+.analysis-kicker {
+  margin-bottom: 7px;
+  color: var(--lime);
+  font-size: 10px;
+  font-weight: 730;
+  letter-spacing: .13em;
+  text-transform: uppercase;
+}
+
+.analysis-intro h2 {
+  font-size: clamp(24px, 3vw, 38px);
+  line-height: 1.1;
+  letter-spacing: -.04em;
+  font-weight: 670;
+}
+
+.analysis-intro p {
+  max-width: 680px;
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.workflow-progress {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0;
+  margin-bottom: 18px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 15px;
+  background: rgba(255,255,255,.018);
+}
+
+.progress-step {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 10px;
+  color: var(--muted-2);
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.progress-step:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: 0;
+  width: 1px;
+  height: 20px;
+  transform: translateY(-50%);
+  background: var(--line);
+}
+
+.step-index {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+  background: rgba(255,255,255,.03);
+  border: 1px solid var(--line);
+  font-family: var(--mono);
+  font-size: 9px;
+}
+
+.progress-step.active {
+  color: var(--text-soft);
+}
+
+.progress-step.active .step-index {
+  color: #10150e;
+  background: var(--lime);
+  border-color: transparent;
+}
+
+.progress-step.complete {
+  color: var(--green);
+}
+
+.progress-step.complete .step-index {
+  color: var(--green);
+  background: var(--green-soft);
+  border-color: rgba(119,213,155,.16);
+}
+
+.plan-card {
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-xl);
+  background:
+    linear-gradient(180deg, rgba(22,30,26,.96), rgba(14,20,17,.97));
+  box-shadow: var(--shadow-lg);
+}
+
+.plan-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 23px 24px 19px;
+  border-bottom: 1px solid var(--line);
+  background:
+    radial-gradient(circle at 100% 0%, rgba(182,243,107,.07), transparent 32%);
+}
+
+.plan-header-left {
+  display: flex;
+  gap: 13px;
+  min-width: 0;
+}
+
+.plan-header-icon {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 auto;
+  border-radius: 13px;
+  color: var(--lime);
+  background: var(--lime-soft);
+  border: 1px solid rgba(182,243,107,.14);
+}
+
+.plan-header h3 {
+  margin-top: 1px;
+  font-size: 16px;
+  font-weight: 670;
+  letter-spacing: -.02em;
+}
+
+.plan-header p {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.skill-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 270px;
+  min-height: 30px;
+  padding: 5px 10px;
+  overflow: hidden;
+  color: var(--gold);
+  background: var(--gold-soft);
+  border: 1px solid rgba(226,189,116,.16);
+  border-radius: 999px;
+  font-family: var(--mono);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skill-badge::before {
+  content: "</>";
+  color: var(--gold);
+  font-weight: 700;
+}
+
+.plan-body {
+  padding: 22px 24px 24px;
+}
+
+.plan-meta {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0,1fr));
+  gap: 10px;
+  margin-bottom: 24px;
+}
+
+.meta-item {
+  min-width: 0;
+  padding: 13px 14px;
+  background: rgba(255,255,255,.022);
+  border: 1px solid var(--line);
+  border-radius: 13px;
+}
+
+.meta-label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 720;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+
+.meta-value {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-soft);
+  font-size: 12px;
+  font-weight: 620;
+}
+
+.section-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 11px;
+}
+
+.section-label h4 {
+  color: var(--text-soft);
+  font-size: 11px;
+  font-weight: 720;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.section-count {
+  color: var(--muted-2);
+  font-family: var(--mono);
+  font-size: 9px;
+}
+
+.hypotheses {
+  display: grid;
+  gap: 8px;
+}
+
+.hypothesis {
+  position: relative;
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  gap: 12px;
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255,255,255,.018);
+  transition: .18s ease;
+}
+
+.hypothesis:hover {
+  border-color: rgba(182,243,107,.18);
+  background: rgba(182,243,107,.025);
+}
+
+.hypothesis-index {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 11px;
+  color: var(--lime);
+  background: var(--lime-soft);
+  border: 1px solid rgba(182,243,107,.13);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.h-title {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.h-method {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.plan-limitations {
+  margin-top: 18px;
+  padding: 15px 16px;
+  color: var(--text-soft);
+  background:
+    linear-gradient(180deg, rgba(238,173,99,.075), rgba(238,173,99,.035));
+  border: 1px solid rgba(238,173,99,.14);
+  border-radius: 14px;
+}
+
+.limitations-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  color: var(--orange);
+  font-size: 10px;
+  font-weight: 720;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.plan-limitations ul {
+  display: grid;
+  gap: 5px;
+  list-style: none;
+}
+
+.plan-limitations li {
+  position: relative;
+  padding-left: 14px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.plan-limitations li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: .65em;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--orange);
+}
+
+.hitl-panel {
+  padding: 17px 18px 18px;
+  border-top: 1px solid var(--line);
+  background: rgba(255,255,255,.015);
+}
+
+.hitl-label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 10px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.hitl-actions {
+  display: grid;
+  grid-template-columns: minmax(240px,1fr) auto auto auto;
+  gap: 8px;
+}
+
+.revise-input {
+  min-width: 0;
+  height: 42px;
+  padding: 0 13px;
+  color: var(--text);
+  background: rgba(255,255,255,.025);
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  outline: none;
+  font-size: 11px;
+  transition: .18s ease;
+}
+
+.revise-input::placeholder {
+  color: var(--muted-2);
+}
+
+.revise-input:focus {
+  border-color: rgba(182,243,107,.33);
+  box-shadow: 0 0 0 3px rgba(182,243,107,.035);
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 0 15px;
+  border: 1px solid transparent;
+  border-radius: 11px;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 680;
+  transition: .18s ease;
+  white-space: nowrap;
+}
+
+.btn:hover {
+  transform: translateY(-1px);
+}
+
+.btn:disabled {
+  opacity: .4;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.btn-approve {
+  color: #11170e;
+  background: linear-gradient(145deg, #c8fa87, #9fdf5b);
+  box-shadow: 0 8px 18px rgba(145,217,79,.12);
+}
+
+.btn-revise {
+  color: var(--text-soft);
+  background: rgba(255,255,255,.035);
+  border-color: var(--line);
+}
+
+.btn-revise:hover {
+  border-color: rgba(182,243,107,.24);
+}
+
+.btn-reject {
+  color: var(--red);
+  background: var(--red-soft);
+  border-color: rgba(239,125,120,.15);
+}
+
+/* === Status banners === */
+
+.status-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  width: min(1040px, 100%);
+  margin: 0 auto 16px;
+  padding: 13px 15px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  font-size: 11px;
+}
+
+.status-banner-icon {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  border-radius: 9px;
+}
+
+.status-banner strong {
+  display: block;
+  margin-bottom: 1px;
+  font-size: 11px;
+}
+
+.status-banner p {
+  color: currentColor;
+  opacity: .72;
+}
+
+.status-banner.executing {
+  color: var(--blue);
+  background: var(--blue-soft);
+  border-color: rgba(119,170,247,.16);
+}
+
+.status-banner.executing .status-banner-icon {
+  background: rgba(119,170,247,.09);
+}
+
+.status-banner.done {
+  color: var(--green);
+  background: var(--green-soft);
+  border-color: rgba(119,213,155,.16);
+}
+
+.status-banner.error {
+  color: var(--red);
+  background: var(--red-soft);
+  border-color: rgba(239,125,120,.16);
+}
+
+.status-banner.rejected {
+  color: var(--muted);
+  background: rgba(255,255,255,.025);
+}
+
+/* === Result === */
+
+.result-stack {
+  display: grid;
+  gap: 16px;
+  width: min(1120px, 100%);
+  margin: 0 auto;
+}
+
+.result-hero {
+  position: relative;
+  overflow: hidden;
+  padding: 26px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-xl);
+  background:
+    radial-gradient(circle at 100% 0%, rgba(182,243,107,.075), transparent 32%),
+    linear-gradient(180deg, rgba(22,30,26,.97), rgba(14,20,17,.98));
+  box-shadow: var(--shadow-md);
+}
+
+.result-hero::after {
+  content: "";
+  position: absolute;
+  width: 170px;
+  height: 170px;
+  top: -92px;
+  right: -70px;
+  border-radius: 50%;
+  border: 1px solid rgba(182,243,107,.12);
+  box-shadow:
+    0 0 0 24px rgba(182,243,107,.025),
+    0 0 0 48px rgba(182,243,107,.012);
+}
+
+.result-hero-header {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.result-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--green);
+  font-size: 10px;
+  font-weight: 730;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+
+.result-label::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 12px rgba(119,213,155,.45);
+}
+
+.result-timestamp {
+  color: var(--muted-2);
+  font-family: var(--mono);
+  font-size: 9px;
+}
+
+.answer-box {
+  position: relative;
+  z-index: 1;
+  max-width: 900px;
+  color: var(--text-soft);
+  font-size: 13px;
+  line-height: 1.72;
+}
+
+.answer-box h3 {
+  margin: 19px 0 7px;
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1.35;
+  letter-spacing: -.02em;
+}
+
+.answer-box h3:first-child {
+  margin-top: 0;
+}
+
+.answer-box p {
+  margin: 0 0 9px;
+}
+
+.answer-box strong {
+  color: var(--lime);
+  font-weight: 660;
+}
+
+.answer-box code {
+  padding: 2px 5px;
+  color: var(--gold);
+  background: var(--gold-soft);
+  border: 1px solid rgba(226,189,116,.12);
+  border-radius: 5px;
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.answer-box ul,
+.answer-box ol {
+  margin: 8px 0 10px 20px;
+}
+
+.answer-box li {
+  margin-bottom: 5px;
+}
+
+.result-section {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: rgba(17,23,20,.88);
+}
+
+.result-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.result-section-header h4 {
+  color: var(--text-soft);
+  font-size: 11px;
+  font-weight: 720;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+}
+
+.result-section-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 25px;
+  height: 23px;
+  padding: 0 7px;
+  color: var(--muted);
+  background: rgba(255,255,255,.035);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  font-family: var(--mono);
+  font-size: 9px;
+}
+
+.table-wrap {
+  overflow-x: auto;
+}
+
+.findings-table {
+  width: 100%;
+  min-width: 900px;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+
+.findings-table th {
+  padding: 11px 14px;
+  color: var(--muted);
+  background: rgba(255,255,255,.012);
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  font-size: 9px;
+  font-weight: 720;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.findings-table td {
+  padding: 14px;
+  color: var(--text-soft);
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+
+.findings-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.findings-table tbody tr {
+  transition: .15s ease;
+}
+
+.findings-table tbody tr:hover {
+  background: rgba(255,255,255,.023);
+}
+
+.entity-id {
+  display: inline-flex;
+  padding: 3px 6px;
+  color: var(--lime);
+  background: var(--lime-soft);
+  border: 1px solid rgba(182,243,107,.11);
+  border-radius: 6px;
+  font-family: var(--mono);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.priority-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 23px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 8px;
+  font-weight: 750;
+  letter-spacing: .055em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.priority-tag::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+}
+
+.priority-tag.critical {
+  color: var(--red);
+  background: var(--red-soft);
+}
+
+.priority-tag.critical::before {
+  background: var(--red);
+}
+
+.priority-tag.high {
+  color: var(--orange);
+  background: var(--orange-soft);
+}
+
+.priority-tag.high::before {
+  background: var(--orange);
+}
+
+.priority-tag.medium {
+  color: var(--gold);
+  background: var(--gold-soft);
+}
+
+.priority-tag.medium::before {
+  background: var(--gold);
+}
+
+.priority-tag.low {
+  color: var(--green);
+  background: var(--green-soft);
+}
+
+.priority-tag.low::before {
+  background: var(--green);
+}
+
+.reasons-cell ul {
+  display: grid;
+  gap: 4px;
+  list-style: none;
+}
+
+.reasons-cell li {
+  position: relative;
+  padding-left: 10px;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.reasons-cell li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: .6em;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--muted-2);
+}
+
+.metrics-cell {
+  max-width: 220px;
+  white-space: pre-line;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 9px;
+  line-height: 1.6;
+}
+
+.action-cell {
+  max-width: 250px;
+  color: var(--text-soft);
+  line-height: 1.5;
+}
+
+.chart-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0,1fr));
+  gap: 12px;
+  padding: 14px;
+}
+
+.chart-card {
+  overflow: hidden;
+  min-height: 180px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255,255,255,.018);
+}
+
+.chart-card img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.result-limitations {
+  padding: 16px 18px 18px;
+}
+
+/* === Error / no data === */
+
+.no-data {
+  display: grid;
+  min-height: 45vh;
+  place-items: center;
+  color: var(--muted);
+  text-align: center;
+}
+
+.no-data-card {
+  max-width: 420px;
+  padding: 24px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: rgba(255,255,255,.018);
+}
+
+.no-data-card h3 {
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.no-data-card p {
+  margin-top: 7px;
+  font-size: 11px;
+}
+
+/* === Scrollbars === */
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,.08);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255,255,255,.15);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+/* === Responsive === */
+
+@media (max-width: 1080px) {
+  :root {
+    --sidebar-width: 260px;
+  }
+
+  .hitl-actions {
+    grid-template-columns: minmax(220px,1fr) auto auto;
+  }
+
+  .btn-reject {
+    grid-column: 3;
+  }
+}
+
+@media (max-width: 860px) {
+  .app {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .main {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .sidebar {
+    grid-column: 1;
+    grid-row: 1;
+    position: fixed;
+    z-index: 30;
+    inset: 0 auto 0 0;
+    width: min(310px, 88vw);
+    transform: translateX(-105%);
+    box-shadow: 24px 0 70px rgba(0,0,0,.48);
+    transition: transform .24s ease;
+  }
+
+  .sidebar.open {
+    transform: translateX(0);
+  }
+
+  .mobile-menu-btn {
+    display: grid;
+  }
+
+  .model-pill {
+    display: none;
+  }
+
+  .main-header {
+    min-height: 64px;
+    padding: 10px 16px;
+  }
+
+  .content {
+    padding: 22px 16px 132px;
+  }
+
+  .composer-wrap {
+    padding: 18px 14px 16px;
+  }
+
+  .examples {
+    grid-template-columns: 1fr;
+  }
+
+  .empty-state h1 {
+    font-size: clamp(34px, 10vw, 52px);
+  }
+
+  .plan-meta {
+    grid-template-columns: 1fr;
+  }
+
+  .workflow-progress {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .progress-step:nth-child(2)::after {
+    display: none;
+  }
+
+  .hitl-actions {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .revise-input {
+    grid-column: 1 / -1;
+  }
+
+  .btn-reject {
+    grid-column: auto;
+  }
+
+  .chart-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 560px) {
+  .header-eyebrow,
+  .model-pill {
+    display: none;
+  }
+
+  .main-header .title {
+    max-width: 52vw;
+    font-size: 13px;
+  }
+
+  .status-badge {
+    height: 29px;
+    padding: 0 9px;
+    font-size: 9px;
+  }
+
+  .empty-state {
+    align-content: start;
+    padding-top: 32px;
+  }
+
+  .hero-orbit {
+    width: 78px;
+    height: 78px;
+    margin-bottom: 19px;
+  }
+
+  .hero-core {
+    width: 46px;
+    height: 46px;
+  }
+
+  .empty-state h1 {
+    font-size: 38px;
+  }
+
+  .empty-state > p {
+    font-size: 12px;
+  }
+
+  .example-btn {
+    min-height: 68px;
+  }
+
+  .capability-row {
+    display: none;
+  }
+
+  .analysis-intro {
+    display: block;
+  }
+
+  .workflow-progress {
+    padding: 7px;
+  }
+
+  .progress-step {
+    gap: 6px;
+    padding: 7px 5px;
+    font-size: 8px;
+  }
+
+  .step-index {
+    width: 21px;
+    height: 21px;
+  }
+
+  .plan-header,
+  .plan-body {
+    padding-left: 17px;
+    padding-right: 17px;
+  }
+
+  .plan-header {
+    display: block;
+  }
+
+  .skill-badge {
+    margin: 13px 0 0 53px;
+  }
+
+  .hitl-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .btn-reject {
+    grid-column: auto;
+  }
+
+  .composer-footer {
+    display: none;
+  }
+
+  .composer {
+    padding-left: 13px;
+  }
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="sidebar-backdrop" id="sidebarBackdrop" onclick="toggleSidebar(false)"></div>
+
+  <!-- Sidebar -->
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true">
+        <svg class="icon" viewBox="0 0 24 24" fill="none">
+          <path d="M6 15.5 10.1 6l3.2 7 2.2-4.5L18 15.5" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M5 18.5h14" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/>
+        </svg>
+      </div>
+      <div class="brand-copy">
+        <div class="brand-name">Mirrolla Intelligence</div>
+        <div class="brand-subtitle">AI operations workspace</div>
+      </div>
+    </div>
+
+    <button class="new-analysis-btn" type="button" onclick="resetWorkspace()">
+      <svg class="icon-sm" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/>
+      </svg>
+      Новый анализ
+      <span class="kbd">N</span>
+    </button>
+
+    <div class="sidebar-section" style="flex:1;">
+      <div class="sidebar-section-header">
+        <span>История</span>
+        <span class="history-count" id="historyCount">0</span>
+      </div>
+
+      <div class="chat-history" id="chatHistory">
+        <div class="history-empty">
+          Анализы появятся здесь после первого запроса. Каждый запуск хранит план, статус и результат.
+        </div>
+      </div>
+    </div>
+
+    <div class="sidebar-footer">
+      <div class="connection-label">Источники данных</div>
+      <div class="connection-list">
+        <div class="connection">
+          <span class="connection-name"><span class="connection-indicator"></span>Wildberries</span>
+          <span class="connection-status">CONNECTED</span>
+        </div>
+        <div class="connection">
+          <span class="connection-name"><span class="connection-indicator"></span>Ozon</span>
+          <span class="connection-status">CONNECTED</span>
+        </div>
+        <div class="connection">
+          <span class="connection-name"><span class="connection-indicator"></span>1C / UNF</span>
+          <span class="connection-status">VPN</span>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Main workspace -->
+  <main class="main">
+    <header class="main-header">
+      <div class="header-left">
+        <button class="mobile-menu-btn" type="button" onclick="toggleSidebar(true)" aria-label="Открыть меню">
+          <svg class="icon" viewBox="0 0 24 24" fill="none">
+            <path d="M5 7h14M5 12h14M5 17h14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+          </svg>
+        </button>
+
+        <div>
+          <div class="header-eyebrow">Marketplace intelligence</div>
+          <div class="header-title-row">
+            <div class="title" id="mainTitle">Новый анализ</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="header-right">
+        <div class="model-pill">
+          <span class="spark">✦</span>
+          Agentic analytics
+        </div>
+        <div class="status-badge" id="statusBadge" data-status="idle">
+          <span id="statusBadgeText">Готов к работе</span>
+        </div>
+      </div>
+    </header>
+
+    <section class="workspace">
+      <div class="content" id="content">
+        <div class="content-inner">
+          <div class="empty-state">
+            <div class="hero-orbit">
+              <div class="hero-core">
+                <svg width="25" height="25" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path d="M6 15.5 10.1 6l3.2 7 2.2-4.5L18 15.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                  <path d="M5 18.5h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                </svg>
+              </div>
+            </div>
+
+            <div class="hero-kicker">AI-аналитик Mirrolla</div>
+            <h1>Решения по маркетплейсам <span class="gradient-text">на основе данных</span></h1>
+            <p>
+              Агент сформирует гипотезы, покажет план анализа для подтверждения
+              и только после этого выполнит расчёты в изолированной среде.
+            </p>
+
+            <div class="examples">
+              <button class="example-btn" type="button" onclick="useExample(this)" data-question="Какие товары заканчиваются?">
+                <span class="example-icon">
+                  <svg class="icon" viewBox="0 0 24 24" fill="none">
+                    <path d="M5 8.5 12 5l7 3.5v7L12 19l-7-3.5v-7Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+                    <path d="m5 8.5 7 3.5 7-3.5M12 12v7" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+                  </svg>
+                </span>
+                <span class="example-copy">
+                  <span class="example-title">Критические остатки</span>
+                  <span class="example-subtitle">Что закончится в ближайшие дни</span>
+                </span>
+              </button>
+
+              <button class="example-btn" type="button" onclick="useExample(this)" data-question="Почему упали продажи ЦБ-00049405?">
+                <span class="example-icon">
+                  <svg class="icon" viewBox="0 0 24 24" fill="none">
+                    <path d="m5 7 5 5 3-3 6 7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M15 16h4v-4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                </span>
+                <span class="example-copy">
+                  <span class="example-title">Диагностика продаж</span>
+                  <span class="example-subtitle">Найти причины падения конкретного SKU</span>
+                </span>
+              </button>
+
+              <button class="example-btn" type="button" onclick="useExample(this)" data-question="Какие товары растут быстрее рынка?">
+                <span class="example-icon">
+                  <svg class="icon" viewBox="0 0 24 24" fill="none">
+                    <path d="M5 17 10 12l3 3 6-8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M15 7h4v4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                </span>
+                <span class="example-copy">
+                  <span class="example-title">Точки роста</span>
+                  <span class="example-subtitle">Лидеры относительно категории</span>
+                </span>
+              </button>
+
+              <button class="example-btn" type="button" onclick="useExample(this)" data-question="Какие отзывы требуют реакции?">
+                <span class="example-icon">
+                  <svg class="icon" viewBox="0 0 24 24" fill="none">
+                    <path d="M6 6h12v9H9l-3 3V6Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+                    <path d="M9 10h6M9 13h4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+                  </svg>
+                </span>
+                <span class="example-copy">
+                  <span class="example-title">Отзывы и репутация</span>
+                  <span class="example-subtitle">Приоритетная очередь для менеджера</span>
+                </span>
+              </button>
+            </div>
+
+            <div class="capability-row">
+              <span class="capability">
+                <svg class="icon-sm" viewBox="0 0 24 24" fill="none"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+                Human-in-the-loop
+              </span>
+              <span class="capability">
+                <svg class="icon-sm" viewBox="0 0 24 24" fill="none"><path d="M7 7h10v10H7z" stroke="currentColor" stroke-width="1.7"/><path d="M10 10h4v4h-4z" fill="currentColor"/></svg>
+                Python sandbox
+              </span>
+              <span class="capability">
+                <svg class="icon-sm" viewBox="0 0 24 24" fill="none"><path d="M5 7h14M5 12h14M5 17h9" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+                WB · Ozon · 1C
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="composer-wrap">
+        <div class="composer">
+          <div class="composer-main">
+            <label class="sr-only" for="questionInput">Вопрос менеджера</label>
+            <textarea
+              class="chat-input"
+              id="questionInput"
+              placeholder="Спросите о продажах, остатках, спросе или отзывах..."
+              rows="1"
+            ></textarea>
+            <button class="send-btn" id="sendBtn" type="button" onclick="createAnalysis()" aria-label="Запустить анализ">
+              <svg class="icon" viewBox="0 0 24 24" fill="none">
+                <path d="M12 18V6M7 11l5-5 5 5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </button>
+          </div>
+          <div class="composer-footer">
+            <div class="composer-context">
+              <span class="context-chip">Данные синхронизированы</span>
+              <span>WB / Ozon / 1C</span>
+            </div>
+            <span><span class="kbd">Enter</span> отправить · <span class="kbd">Shift</span> + <span class="kbd">Enter</span> новая строка</span>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script>
+const API = 'http://127.0.0.1:8000/api/v1';
+
+let currentAnalysisId = null;
+let analyses = [];
+const activePolls = new Set();
+
+const STATUS_LABELS = {
+  idle: 'Готов к работе',
+  awaiting_approval: 'Ожидает решения',
+  awaiting: 'Ожидает решения',
+  executing: 'Выполняет анализ',
+  done: 'Анализ готов',
+  error: 'Ошибка',
+  rejected: 'Отклонён'
+};
+
+/* =========================================================
+   API
+   ========================================================= */
+
+async function apiCreate(question) {
+  const response = await fetch(`${API}/analyses`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({question})
+  });
+
+  if (!response.ok) {
+    throw new Error(`Не удалось создать анализ (${response.status})`);
+  }
+
+  return response.json();
+}
+
+async function apiGet(id) {
+  const response = await fetch(`${API}/analyses/${id}`);
+
+  if (!response.ok) {
+    throw new Error(`Не удалось получить анализ (${response.status})`);
+  }
+
+  return response.json();
+}
+
+async function apiApprove(id) {
+  const response = await fetch(`${API}/analyses/${id}/approve`, {
+    method: 'POST'
+  });
+
+  if (!response.ok) {
+    throw new Error(`Не удалось подтвердить план (${response.status})`);
+  }
+
+  return response.json();
+}
+
+async function apiReject(id) {
+  const response = await fetch(`${API}/analyses/${id}/reject`, {
+    method: 'POST'
+  });
+
+  if (!response.ok) {
+    throw new Error(`Не удалось отклонить план (${response.status})`);
+  }
+
+  return response.json();
+}
+
+async function apiRevise(id, feedback) {
+  const response = await fetch(`${API}/analyses/${id}/revise`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({feedback})
+  });
+
+  if (!response.ok) {
+    throw new Error(`Не удалось обновить план (${response.status})`);
+  }
+
+  return response.json();
+}
+
+/* =========================================================
+   Workspace actions
+   ========================================================= */
+
+function toggleSidebar(open) {
+  document.getElementById('sidebar').classList.toggle('open', open);
+  document.getElementById('sidebarBackdrop').classList.toggle('visible', open);
+}
+
+function resetWorkspace() {
+  currentAnalysisId = null;
+  setHeader('Новый анализ', 'idle');
+
+  document.getElementById('questionInput').value = '';
+  autoResizeInput();
+
+  document.getElementById('content').innerHTML = `
+    <div class="content-inner">
+      ${renderEmptyState()}
+    </div>
+  `;
+
+  renderHistory();
+  toggleSidebar(false);
+  setTimeout(() => document.getElementById('questionInput').focus(), 80);
+}
+
+function renderEmptyState() {
+  return `
+    <div class="empty-state">
+      <div class="hero-orbit">
+        <div class="hero-core">
+          <svg width="25" height="25" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M6 15.5 10.1 6l3.2 7 2.2-4.5L18 15.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M5 18.5h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          </svg>
+        </div>
+      </div>
+
+      <div class="hero-kicker">AI-аналитик Mirrolla</div>
+      <h1>Решения по маркетплейсам <span class="gradient-text">на основе данных</span></h1>
+      <p>
+        Агент сформирует гипотезы, покажет план анализа для подтверждения
+        и только после этого выполнит расчёты в изолированной среде.
+      </p>
+
+      <div class="examples">
+        ${exampleCard(
+          'Какие товары заканчиваются?',
+          'Критические остатки',
+          'Что закончится в ближайшие дни',
+          `<path d="M5 8.5 12 5l7 3.5v7L12 19l-7-3.5v-7Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="m5 8.5 7 3.5 7-3.5M12 12v7" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>`
+        )}
+        ${exampleCard(
+          'Почему упали продажи ЦБ-00049405?',
+          'Диагностика продаж',
+          'Найти причины падения конкретного SKU',
+          `<path d="m5 7 5 5 3-3 6 7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M15 16h4v-4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>`
+        )}
+        ${exampleCard(
+          'Какие товары растут быстрее рынка?',
+          'Точки роста',
+          'Лидеры относительно категории',
+          `<path d="M5 17 10 12l3 3 6-8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M15 7h4v4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>`
+        )}
+        ${exampleCard(
+          'Какие отзывы требуют реакции?',
+          'Отзывы и репутация',
+          'Приоритетная очередь для менеджера',
+          `<path d="M6 6h12v9H9l-3 3V6Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M9 10h6M9 13h4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>`
+        )}
+      </div>
+
+      <div class="capability-row">
+        <span class="capability">Human-in-the-loop</span>
+        <span class="capability">Python sandbox</span>
+        <span class="capability">WB · Ozon · 1C</span>
+      </div>
+    </div>
+  `;
+}
+
+function exampleCard(question, title, subtitle, svgPaths) {
+  return `
+    <button class="example-btn" type="button" onclick="useExample(this)" data-question="${escapeAttribute(question)}">
+      <span class="example-icon">
+        <svg class="icon" viewBox="0 0 24 24" fill="none">${svgPaths}</svg>
+      </span>
+      <span class="example-copy">
+        <span class="example-title">${escapeHtml(title)}</span>
+        <span class="example-subtitle">${escapeHtml(subtitle)}</span>
+      </span>
+    </button>
+  `;
+}
+
+function useExample(button) {
+  const question = button.dataset.question || button.textContent.trim();
+  const input = document.getElementById('questionInput');
+
+  input.value = question;
+  autoResizeInput();
+  input.focus();
+}
+
+async function createAnalysis() {
+  const input = document.getElementById('questionInput');
+  const question = input.value.trim();
+
+  if (!question) {
+    input.focus();
+    return;
+  }
+
+  setComposerLoading(true);
+  setHeader(question, 'executing');
+  document.getElementById('content').innerHTML = renderLoadingState(
+    'Формируем план исследования',
+    'Агент изучает вопрос, выбирает skill и готовит проверяемые гипотезы.'
+  );
+
+  try {
+    const data = await apiCreate(question);
+
+    currentAnalysisId = data.id;
+    upsertAnalysis(data, true);
+
+    input.value = '';
+    autoResizeInput();
+
+    renderHistory();
+    renderAnalysis(data);
+    pollForUpdates(data.id);
+  } catch (error) {
+    document.getElementById('content').innerHTML = `
+      <div class="content-inner">
+        ${renderStatusBanner('error', 'Не удалось начать анализ', error.message)}
+      </div>
+    `;
+    setHeader(question, 'error');
+  } finally {
+    setComposerLoading(false);
+  }
+}
+
+async function approve() {
+  if (!currentAnalysisId) return;
+
+  disableHitlButtons(true);
+
+  try {
+    const data = await apiApprove(currentAnalysisId);
+    if (data?.id) upsertAnalysis(data);
+
+    setHeader(document.getElementById('mainTitle').textContent, 'executing');
+    prependStatus('executing', 'План утверждён', 'Агент выполняет расчёты в изолированном Python-окружении.');
+    pollForUpdates(currentAnalysisId);
+  } catch (error) {
+    prependStatus('error', 'Не удалось подтвердить план', error.message);
+    disableHitlButtons(false);
+  }
+}
+
+async function reject() {
+  if (!currentAnalysisId) return;
+
+  disableHitlButtons(true);
+
+  try {
+    const data = await apiReject(currentAnalysisId);
+    if (data?.id) upsertAnalysis(data);
+
+    setHeader(document.getElementById('mainTitle').textContent, 'rejected');
+    prependStatus('rejected', 'План отклонён', 'Запуск анализа остановлен пользователем.');
+    renderHistory();
+  } catch (error) {
+    prependStatus('error', 'Не удалось отклонить план', error.message);
+    disableHitlButtons(false);
+  }
+}
+
+async function revise() {
+  if (!currentAnalysisId) return;
+
+  const input = document.getElementById('reviseInput');
+  const feedback = input?.value.trim();
+
+  if (!feedback) {
+    input?.focus();
+    return;
+  }
+
+  disableHitlButtons(true);
+
+  try {
+    const data = await apiRevise(currentAnalysisId, feedback);
+    upsertAnalysis(data);
+    renderAnalysis(data);
+    renderHistory();
+  } catch (error) {
+    prependStatus('error', 'Не удалось пересобрать план', error.message);
+    disableHitlButtons(false);
+  }
+}
+
+/* =========================================================
+   Polling
+   ========================================================= */
+
+async function pollForUpdates(id) {
+  if (activePolls.has(id)) return;
+  activePolls.add(id);
+
+  try {
+    const maxPolls = 120;
+
+    for (let index = 0; index < maxPolls; index++) {
+      await delay(5000);
+
+      try {
+        const data = await apiGet(id);
+        upsertAnalysis(data);
+
+        if (id !== currentAnalysisId) {
+          renderHistory();
+        }
+
+        if (['done', 'error', 'rejected'].includes(data.status)) {
+          if (id === currentAnalysisId) {
+            renderAnalysis(data);
+          }
+          renderHistory();
+          return;
+        }
+
+        if (id === currentAnalysisId && data.status === 'executing') {
+          setHeader(data.question || 'Анализ', 'executing');
+        }
+      } catch (_) {
+        // Temporary API failures should not kill the polling loop.
+      }
+    }
+  } finally {
+    activePolls.delete(id);
+  }
+}
+
+/* =========================================================
+   Rendering
+   ========================================================= */
+
+function renderHistory() {
+  const element = document.getElementById('chatHistory');
+  document.getElementById('historyCount').textContent = analyses.length;
+
+  if (!analyses.length) {
+    element.innerHTML = `
+      <div class="history-empty">
+        Анализы появятся здесь после первого запроса. Каждый запуск хранит план, статус и результат.
+      </div>
+    `;
+    return;
+  }
+
+  element.innerHTML = analyses.map(analysis => {
+    const status = analysis.status || 'awaiting_approval';
+    const label = STATUS_LABELS[status] || status;
+
+    return `
+      <div class="history-item ${analysis.id === currentAnalysisId ? 'active' : ''}" onclick="loadAnalysis('${escapeAttribute(analysis.id)}')">
+        <div class="history-icon">
+          <svg class="icon-sm" viewBox="0 0 24 24" fill="none">
+            <path d="M6 17V9M12 17V5M18 17v-4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <div class="history-copy">
+          <div class="history-question">${escapeHtml(analysis.question || 'Анализ')}</div>
+          <div class="history-meta">
+            <span class="status-dot ${escapeAttribute(status)}"></span>
+            <span>${escapeHtml(label)}</span>
+          </div>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+async function loadAnalysis(id) {
+  currentAnalysisId = id;
+  toggleSidebar(false);
+  renderHistory();
+
+  document.getElementById('content').innerHTML = renderLoadingState(
+    'Открываем анализ',
+    'Получаем сохранённое состояние workflow.'
+  );
+
+  try {
+    const data = await apiGet(id);
+    upsertAnalysis(data);
+    renderHistory();
+    renderAnalysis(data);
+
+    if (data.status === 'executing') {
+      pollForUpdates(id);
+    }
+  } catch (error) {
+    document.getElementById('content').innerHTML = `
+      <div class="content-inner">
+        ${renderStatusBanner('error', 'Не удалось открыть анализ', error.message)}
+      </div>
+    `;
+  }
+}
+
+function renderAnalysis(data) {
+  const status = data.status || 'awaiting_approval';
+  setHeader(data.question || 'Анализ', status);
+
+  let html = '<div class="content-inner">';
+
+  if (status === 'executing') {
+    html += renderStatusBanner(
+      'executing',
+      'Анализ выполняется',
+      'Агент проверяет утверждённые гипотезы и готовит результат.'
+    );
+  } else if (status === 'error') {
+    html += renderStatusBanner(
+      'error',
+      'Ошибка выполнения',
+      data.error || 'Проверьте доступность API и журналы backend.'
+    );
+  } else if (status === 'rejected') {
+    html += renderStatusBanner(
+      'rejected',
+      'Анализ отклонён',
+      'План не был передан агенту на выполнение.'
+    );
+  } else if (status === 'done') {
+    html += renderStatusBanner(
+      'done',
+      'Анализ завершён',
+      'Выводы сформированы на основе утверждённого плана.'
+    );
+  }
+
+  if (data.plan && ['awaiting_approval', 'awaiting', 'executing', 'done'].includes(status)) {
+    html += renderPlan(data.plan, status, data.question);
+  }
+
+  if (data.result && status === 'done') {
+    html += renderResult(data.result);
+  }
+
+  if (!data.plan && !data.result && !['error', 'rejected'].includes(status)) {
+    html += renderLoadingState(
+      'Формируем план исследования',
+      'Агент выбирает метод анализа и собирает гипотезы.'
+    );
+  }
+
+  html += '</div>';
+
+  document.getElementById('content').innerHTML = html;
+}
+
+function renderLoadingState(title, description) {
+  return `
+    <div class="content-inner">
+      <div class="loading-state">
+        <div class="loading-card">
+          <div class="loading-head">
+            <div class="spinner"></div>
+            <div>
+              <div class="loading-title">${escapeHtml(title)}</div>
+              <div class="loading-copy">${escapeHtml(description)}</div>
+            </div>
+          </div>
+          <div class="skeleton-lines">
+            <div class="skeleton-line"></div>
+            <div class="skeleton-line"></div>
+            <div class="skeleton-line"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderPlan(plan, status, question) {
+  const hypotheses = Array.isArray(plan.hypotheses) ? plan.hypotheses : [];
+  const limitations = Array.isArray(plan.limitations) ? plan.limitations : [];
+  const showActions = ['awaiting_approval', 'awaiting'].includes(status);
+
+  const steps = getProgressSteps(status);
+
+  return `
+    <div class="workflow-shell">
+      <div class="analysis-intro">
+        <div class="analysis-intro-copy">
+          <div class="analysis-kicker">Human review checkpoint</div>
+          <h2>${escapeHtml(question || 'План анализа')}</h2>
+          <p>
+            Проверьте гипотезы и параметры. Агент начнёт вычисления только после подтверждения.
+          </p>
+        </div>
+      </div>
+
+      <div class="workflow-progress">
+        ${steps.map((step, index) => `
+          <div class="progress-step ${step.state}">
+            <span class="step-index">${step.state === 'complete' ? '✓' : String(index + 1).padStart(2, '0')}</span>
+            <span>${step.label}</span>
+          </div>
+        `).join('')}
+      </div>
+
+      <article class="plan-card">
+        <header class="plan-header">
+          <div class="plan-header-left">
+            <div class="plan-header-icon">
+              <svg class="icon" viewBox="0 0 24 24" fill="none">
+                <path d="M7 5h10v14H7z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+                <path d="M10 9h4M10 12h4M10 15h2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+              </svg>
+            </div>
+            <div>
+              <h3>План исследования</h3>
+              <p>${showActions ? 'Ожидает утверждения менеджера' : 'Зафиксирован в workflow'}</p>
+            </div>
+          </div>
+
+          <span class="skill-badge">${escapeHtml(plan.skill || 'general-analysis')}</span>
+        </header>
+
+        <div class="plan-body">
+          <div class="plan-meta">
+            <div class="meta-item">
+              <span class="meta-label">Период</span>
+              <span class="meta-value">${escapeHtml(formatPlanPeriod(plan.period))}</span>
+            </div>
+            <div class="meta-item">
+              <span class="meta-label">Объект анализа</span>
+              <span class="meta-value">${escapeHtml(formatProductScope(plan.product_codes))}</span>
+            </div>
+            <div class="meta-item">
+              <span class="meta-label">Гипотезы</span>
+              <span class="meta-value">${hypotheses.length} ${pluralize(hypotheses.length, 'проверка', 'проверки', 'проверок')}</span>
+            </div>
+          </div>
+
+          <div class="section-label">
+            <h4>Гипотезы агента</h4>
+            <span class="section-count">${hypotheses.length.toString().padStart(2, '0')}</span>
+          </div>
+
+          <div class="hypotheses">
+            ${hypotheses.length ? hypotheses.map((hypothesis, index) => `
+              <div class="hypothesis">
+                <div class="hypothesis-index">${escapeHtml(hypothesis.id || `H${index + 1}`)}</div>
+                <div>
+                  <div class="h-title">${escapeHtml(hypothesis.title || 'Гипотеза')}</div>
+                  <div class="h-method">${escapeHtml(hypothesis.method || 'Метод проверки будет выбран агентом.')}</div>
+                </div>
+              </div>
+            `).join('') : `
+              <div class="hypothesis">
+                <div class="hypothesis-index">—</div>
+                <div>
+                  <div class="h-title">Гипотезы не указаны</div>
+                  <div class="h-method">Уточните вопрос или попросите агента пересобрать план.</div>
+                </div>
+              </div>
+            `}
+          </div>
+
+          ${limitations.length ? `
+            <div class="plan-limitations">
+              <div class="limitations-title">
+                <svg class="icon-sm" viewBox="0 0 24 24" fill="none">
+                  <path d="M12 5 4.5 18h15L12 5Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+                  <path d="M12 10v3.5M12 16.5h.01" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+                </svg>
+                Ограничения данных
+              </div>
+              <ul>
+                ${limitations.map(item => `<li>${escapeHtml(item)}</li>`).join('')}
+              </ul>
+            </div>
+          ` : ''}
+        </div>
+
+        ${showActions ? `
+          <footer class="hitl-panel">
+            <div class="hitl-label">
+              <svg class="icon-sm" viewBox="0 0 24 24" fill="none">
+                <path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+              </svg>
+              Внесите правки текстом или подтвердите план без изменений
+            </div>
+
+            <div class="hitl-actions">
+              <input
+                type="text"
+                class="revise-input"
+                id="reviseInput"
+                placeholder="Например: период 30 дней, отдельно WB и Ozon"
+                onkeydown="if(event.key === 'Enter') revise()"
+              >
+              <button class="btn btn-revise hitl-btn" type="button" onclick="revise()">
+                <svg class="icon-sm" viewBox="0 0 24 24" fill="none">
+                  <path d="m6 17 1-4 8-8 3 3-8 8-4 1Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+                </svg>
+                Пересобрать
+              </button>
+              <button class="btn btn-approve hitl-btn" type="button" onclick="approve()">
+                <svg class="icon-sm" viewBox="0 0 24 24" fill="none">
+                  <path d="m6 12 4 4 8-9" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                Утвердить
+              </button>
+              <button class="btn btn-reject hitl-btn" type="button" onclick="reject()" title="Отклонить план">
+                <svg class="icon-sm" viewBox="0 0 24 24" fill="none">
+                  <path d="m7 7 10 10M17 7 7 17" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                </svg>
+                Отклонить
+              </button>
+            </div>
+          </footer>
+        ` : ''}
+      </article>
+    </div>
+  `;
+}
+
+function renderResult(result) {
+  const findings = Array.isArray(result.findings) ? result.findings : [];
+  const charts = Array.isArray(result.charts) ? result.charts : [];
+  const limitations = Array.isArray(result.limitations) ? result.limitations : [];
+  const timestamp = new Date().toLocaleString('ru-RU', {
+    day: '2-digit',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit'
+  });
+
+  let html = `
+    <div class="result-stack">
+      <section class="result-hero">
+        <div class="result-hero-header">
+          <div class="result-label">Ответ менеджеру</div>
+          <div class="result-timestamp">${escapeHtml(timestamp)}</div>
+        </div>
+        <div class="answer-box">${renderMarkdown(result.summary || result.answer || 'Результат не содержит текстового резюме.')}</div>
+      </section>
+  `;
+
+  if (findings.length) {
+    html += `
+      <section class="result-section">
+        <div class="result-section-header">
+          <h4>Приоритетные находки</h4>
+          <span class="result-section-count">${findings.length}</span>
+        </div>
+
+        <div class="table-wrap">
+          <table class="findings-table">
+            <thead>
+              <tr>
+                <th>Приоритет</th>
+                <th>Артикул</th>
+                <th>Товар</th>
+                <th>Сигналы</th>
+                <th>Метрики</th>
+                <th>Рекомендация</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${findings.map(finding => `
+                <tr>
+                  <td><span class="priority-tag ${normalizePriority(finding.priority)}">${escapeHtml(finding.priority || 'medium')}</span></td>
+                  <td><span class="entity-id">${escapeHtml(finding.entity_id || '—')}</span></td>
+                  <td>${escapeHtml(finding.name || '—')}</td>
+                  <td class="reasons-cell">
+                    <ul>${(finding.reasons || []).map(reason => `<li>${escapeHtml(reason)}</li>`).join('')}</ul>
+                  </td>
+                  <td class="metrics-cell">${escapeHtml(formatMetrics(finding.metrics))}</td>
+                  <td class="action-cell">${escapeHtml(finding.recommended_action || '—')}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    `;
+  }
+
+  if (charts.length) {
+    html += `
+      <section class="result-section">
+        <div class="result-section-header">
+          <h4>Визуализации</h4>
+          <span class="result-section-count">${charts.length}</span>
+        </div>
+        <div class="chart-grid">
+          ${charts.map(chart => `
+            <div class="chart-card">
+              <img src="${escapeAttribute(chart)}" alt="График анализа" loading="lazy">
+            </div>
+          `).join('')}
+        </div>
+      </section>
+    `;
+  }
+
+  if (limitations.length) {
+    html += `
+      <section class="result-section">
+        <div class="result-section-header">
+          <h4>Ограничения результата</h4>
+          <span class="result-section-count">${limitations.length}</span>
+        </div>
+        <div class="result-limitations">
+          <div class="plan-limitations" style="margin-top:0;">
+            <div class="limitations-title">Что важно учитывать</div>
+            <ul>${limitations.map(item => `<li>${escapeHtml(item)}</li>`).join('')}</ul>
+          </div>
+        </div>
+      </section>
+    `;
+  }
+
+  html += '</div>';
+  return html;
+}
+
+function renderStatusBanner(type, title, message) {
+  const icons = {
+    executing: `<div class="spinner" style="width:28px;height:28px;border-radius:9px;"><span></span></div>`,
+    done: `<svg class="icon-sm" viewBox="0 0 24 24" fill="none"><path d="m6 12 4 4 8-9" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+    error: `<svg class="icon-sm" viewBox="0 0 24 24" fill="none"><path d="M12 5 4.5 18h15L12 5Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M12 10v3.5M12 16.5h.01" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>`,
+    rejected: `<svg class="icon-sm" viewBox="0 0 24 24" fill="none"><path d="m7 7 10 10M17 7 7 17" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`
+  };
+
+  return `
+    <div class="status-banner ${escapeAttribute(type)}">
+      <div class="status-banner-icon">${icons[type] || icons.done}</div>
+      <div>
+        <strong>${escapeHtml(title)}</strong>
+        <p>${escapeHtml(message || '')}</p>
+      </div>
+    </div>
+  `;
+}
+
+function prependStatus(type, title, message) {
+  const content = document.getElementById('content');
+  const inner = content.querySelector('.content-inner');
+
+  if (inner) {
+    inner.insertAdjacentHTML('afterbegin', renderStatusBanner(type, title, message));
+  } else {
+    content.insertAdjacentHTML('afterbegin', `<div class="content-inner">${renderStatusBanner(type, title, message)}</div>`);
+  }
+}
+
+/* =========================================================
+   UI helpers
+   ========================================================= */
+
+function setHeader(title, status) {
+  document.getElementById('mainTitle').textContent = title || 'Анализ';
+
+  const badge = document.getElementById('statusBadge');
+  badge.dataset.status = status || 'idle';
+
+  document.getElementById('statusBadgeText').textContent =
+    STATUS_LABELS[status] || status || STATUS_LABELS.idle;
+}
+
+function setComposerLoading(loading) {
+  const button = document.getElementById('sendBtn');
+  button.disabled = loading;
+
+  button.innerHTML = loading
+    ? `<svg class="icon" viewBox="0 0 24 24" fill="none"><path d="M12 4a8 8 0 1 0 8 8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>`
+    : `<svg class="icon" viewBox="0 0 24 24" fill="none"><path d="M12 18V6M7 11l5-5 5 5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+}
+
+function disableHitlButtons(disabled) {
+  document.querySelectorAll('.hitl-btn').forEach(button => {
+    button.disabled = disabled;
+  });
+}
+
+function autoResizeInput() {
+  const input = document.getElementById('questionInput');
+  if (!input) return;
+
+  input.style.height = 'auto';
+  input.style.height = `${Math.min(input.scrollHeight, 150)}px`;
+}
+
+function getProgressSteps(status) {
+  const steps = [
+    {label: 'План', state: 'active'},
+    {label: 'Проверка', state: ''},
+    {label: 'Выполнение', state: ''},
+    {label: 'Отчёт', state: ''}
+  ];
+
+  if (['awaiting_approval', 'awaiting'].includes(status)) {
+    steps[0].state = 'complete';
+    steps[1].state = 'active';
+  } else if (status === 'executing') {
+    steps[0].state = 'complete';
+    steps[1].state = 'complete';
+    steps[2].state = 'active';
+  } else if (status === 'done') {
+    steps.forEach(step => step.state = 'complete');
+  }
+
+  return steps;
+}
+
+function formatPlanPeriod(period) {
+  if (!period) return 'По данным запроса';
+
+  if (period.current_days) {
+    return `${period.current_days} дней`;
+  }
+
+  if (period.date_from && period.date_to) {
+    return `${period.date_from} — ${period.date_to}`;
+  }
+
+  return 'По данным запроса';
+}
+
+function formatProductScope(productCodes) {
+  if (!Array.isArray(productCodes) || !productCodes.length) {
+    return 'Весь портфель';
+  }
+
+  return productCodes.join(', ');
+}
+
+function formatMetrics(metrics) {
+  if (!metrics || typeof metrics !== 'object') return '—';
+
+  return Object.entries(metrics)
+    .map(([key, value]) => `${humanizeKey(key)}: ${value}`)
+    .join('\n');
+}
+
+function humanizeKey(key) {
+  return String(key)
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, char => char.toUpperCase());
+}
+
+function normalizePriority(priority) {
+  const value = String(priority || 'medium').toLowerCase();
+  return ['critical', 'high', 'medium', 'low'].includes(value)
+    ? value
+    : 'medium';
+}
+
+function pluralize(number, one, few, many) {
+  const mod10 = number % 10;
+  const mod100 = number % 100;
+
+  if (mod10 === 1 && mod100 !== 11) return one;
+  if ([2,3,4].includes(mod10) && ![12,13,14].includes(mod100)) return few;
+  return many;
+}
+
+function upsertAnalysis(data, prepend = false) {
+  const index = analyses.findIndex(item => item.id === data.id);
+
+  if (index >= 0) {
+    analyses[index] = data;
+  } else if (prepend) {
+    analyses.unshift(data);
+  } else {
+    analyses.push(data);
+  }
+}
+
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function escapeHtml(value) {
+  if (value == null) return '';
+
+  return String(value).replace(/[&<>"']/g, character => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;'
+  })[character]);
+}
+
+function escapeAttribute(value) {
+  return escapeHtml(value).replace(/`/g, '&#96;');
+}
+
+function renderMarkdown(text) {
+  const safe = escapeHtml(text || '');
+  const lines = safe.split('\n');
+  let html = '';
+  let listType = null;
+
+  const closeList = () => {
+    if (listType) {
+      html += `</${listType}>`;
+      listType = null;
+    }
+  };
+
+  lines.forEach(line => {
+    const heading = line.match(/^###\s+(.+)$/);
+    const ordered = line.match(/^\d+\.\s+(.+)$/);
+    const unordered = line.match(/^[-•]\s+(.+)$/);
+
+    if (heading) {
+      closeList();
+      html += `<h3>${inlineMarkdown(heading[1])}</h3>`;
+      return;
+    }
+
+    if (ordered) {
+      if (listType !== 'ol') {
+        closeList();
+        listType = 'ol';
+        html += '<ol>';
+      }
+      html += `<li>${inlineMarkdown(ordered[1])}</li>`;
+      return;
+    }
+
+    if (unordered) {
+      if (listType !== 'ul') {
+        closeList();
+        listType = 'ul';
+        html += '<ul>';
+      }
+      html += `<li>${inlineMarkdown(unordered[1])}</li>`;
+      return;
+    }
+
+    closeList();
+
+    if (!line.trim()) {
+      html += '<br>';
+    } else {
+      html += `<p>${inlineMarkdown(line)}</p>`;
+    }
+  });
+
+  closeList();
+  return html;
+}
+
+function inlineMarkdown(value) {
+  return value
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/`(.+?)`/g, '<code>$1</code>');
+}
+
+/* =========================================================
+   Keyboard / input
+   ========================================================= */
+
+document.getElementById('questionInput').addEventListener('input', autoResizeInput);
+
+document.getElementById('questionInput').addEventListener('keydown', event => {
+  if (event.key === 'Enter' && !event.shiftKey) {
+    event.preventDefault();
+    createAnalysis();
+  }
+});
+
+document.addEventListener('keydown', event => {
+  if (
+    event.key.toLowerCase() === 'n' &&
+    !event.ctrlKey &&
+    !event.metaKey &&
+    !['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName)
+  ) {
+    event.preventDefault();
+    resetWorkspace();
+  }
+
+  if (event.key === 'Escape') {
+    toggleSidebar(false);
+  }
+});
+</script>
+</body>
+</html>

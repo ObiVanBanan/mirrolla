@@ -191,6 +191,8 @@ POST /api/v1/reports/management → авто-отчёт
 | **Should** | Графики (PNG из CI) отображаются в чате |
 | **Could** | История анализов в боковой панели |
 
+| **Статус** | ✅ Готово |
+
 ---
 
 ### M8 — Auto-report + Docker + Demo

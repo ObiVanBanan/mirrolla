@@ -24,6 +24,7 @@ from typing import Optional
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -99,6 +100,15 @@ app = FastAPI(
     title="Mirrolla AI Assistant",
     description="Аналитический ассистент для маркетплейсов WB+Ozon",
     version="1.0.0",
+)
+
+# CORS — для UI на file:// или другом порту
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # dev: можно ограничить для prod
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
