@@ -25,7 +25,7 @@ from typing import Optional
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel, Field
 
 # Убедиться что проектный root в sys.path
@@ -111,6 +111,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+UI_INDEX = os.path.join(PROJECT_ROOT, "ui", "mirrolla_assistant.html")
+
+
+@app.get("/", include_in_schema=False)
+async def main_page():
+    if not os.path.exists(UI_INDEX):
+        raise HTTPException(
+            status_code=404,
+            detail="Файл ui/mirrolla_assistant.html не найден",
+        )
+
+    return FileResponse(UI_INDEX)
 
 @app.on_event("startup")
 async def startup():
