@@ -11,12 +11,16 @@ client/onec_client.py — Клиент тестового API 1С УНФ Mirroll
  См. data/api_research.md
 """
 
+import os
+
 import requests
 import pandas as pd
 from typing import Optional
 
-BASE_URL = "http://192.168.201.250/Sklad_Server/hs/WebAssistant"
-AUTH = ("WebAssistant", "WebAssistant")
+BASE_URL = os.getenv("ONE_C_URL", "http://192.168.201.250/Sklad_Server/hs/WebAssistant")
+_USER = os.getenv("ONE_C_USER", "WebAssistant")
+_PASS = os.getenv("ONE_C_PASS", "WebAssistant")
+AUTH = (_USER, _PASS)
 TIMEOUT = 60  # ProductInformation может быть 7+ MB
 
 

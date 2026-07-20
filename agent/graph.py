@@ -64,7 +64,9 @@ CHECKPOINT_DB = os.path.join("data", "checkpoints.sqlite")
 def _get_connection():
     """Получить SQLite connection для checkpointer."""
     os.makedirs(os.path.dirname(CHECKPOINT_DB), exist_ok=True)
-    return sqlite3.connect(CHECKPOINT_DB, check_same_thread=False)
+    conn = sqlite3.connect(CHECKPOINT_DB, check_same_thread=False)
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
 
 
 # === Узел interrupt (HITL) ===

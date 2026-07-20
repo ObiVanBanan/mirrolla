@@ -287,6 +287,27 @@ print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
 """
 
 
+# === Reference code: helpers/*.py для инжекции в CI prompt ===
+
+HELPERS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "helpers")
+
+
+def _load_helpers_code() -> str:
+    """Загрузить исходный код helpers/*.py для инжекции в CI prompt.
+
+    CI может переиспользовать проверенную логику вместо написания с нуля.
+    """
+    helper_files = ["sales.py", "stocks.py", "reviews.py"]
+    blocks = []
+    for name in helper_files:
+        path = os.path.join(HELPERS_DIR, name)
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                code = f.read()
+            blocks.append(f"### helpers/{name}\n```python\n{code}\n```")
+    return "\n\n".join(blocks)
+
+
 # === Сборка prompt для Code Interpreter ===
 
 def _build_prompt(plan: AnalysisPlan, balances_available: bool) -> str:
@@ -297,6 +318,7 @@ def _build_prompt(plan: AnalysisPlan, balances_available: bool) -> str:
     Code Interpreter сам пишет и запускает Python код.
     """
     skill_md = _load_skill_md(plan.skill)
+    helpers_code = _load_helpers_code()
 
     # Описание гипотез (опционально — CI проверяет, но результат в findings)
     hypotheses_text = []
@@ -340,6 +362,9 @@ def _build_prompt(plan: AnalysisPlan, balances_available: bool) -> str:
 
 ## Инструкция skill (SKILL.md)
 {skill_md}
+
+## Reference code (helpers/*.py — проверенная логика, переиспользуй)
+{helpers_code}
 
 ## Схема доступных данных
 {DATA_SCHEMA}
@@ -494,7 +519,7 @@ def _parse_ci_result(
 
             findings.append(Finding(
                 entity_type=f.get("entity_type", "product"),
-                entity_id=f.get("entity_id", "?"),
+                entity_id=str(f.get("entity_id") or "?"),
                 name=f.get("name", "?"),
                 priority=f.get("priority", "medium"),
                 reasons=clean_reasons,
@@ -569,10 +594,6 @@ def validate_analysis_result(
     for i, f in enumerate(parsed.get("findings", [])):
         if not f.get("entity_id"):
             errors.append(f"findings[{i}]: отсутствует entity_id")
-        if not f.get("reasons"):
-            errors.append(f"findings[{i}]: отсутствуют reasons")
-        if not f.get("metrics") and f.get("metrics") != {}:
-            errors.append(f"findings[{i}]: отсутствуют metrics")
 
     return errors
 

@@ -1,0 +1,36 @@
+# Secrets
+.env
+.env.local
+
+# Data files (sensitive: Ozon/WB exports, SQLite DBs, charts, prepared JSON)
+data/*.xlsx
+data/*.sqlite
+data/charts/
+data/prepared/*.json
+
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+
+# Reports output
+reports/output/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Hermes (local agent state)
+.hermes/
+
+# Misc
+.env.exmple

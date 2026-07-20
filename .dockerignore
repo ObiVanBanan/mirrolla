@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+.venv/
+venv/
+env/
+
+# Data
+data/ozon*.xlsx
+data/wb*.xlsx
+data/*.json
+!data/prepared/products.json
+!data/prepared/balances.json
+data/checkpoints.sqlite
+data/analyses.sqlite
+data/charts/
+
+# Reports output
+reports/output/
+*.md
+!docs/**/*.md
+!README.md
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets
+.env
+
+# Git
+.git
+.gitignore

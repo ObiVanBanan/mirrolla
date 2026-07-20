@@ -1,93 +1,187 @@
-# Mirrolla
+# Mirrolla AI — Аналитический ассистент маркетплейсов
 
+AI-ассистент для менеджеров WB+Ozon, отвечающий на вопросы о продажах, остатках, отзывах и росте товаров на основе данных 1С и маркетплейсов.
 
+## Что умеет
 
-## Getting started
+- **Почему упали продажи?** — диагностика конкретного SKU
+- **Какие товары заканчиваются?** — топ критических остатков с приоритетами
+- **Что заказать в производство?** — рекомендации по объёмам
+- **Что растёт быстрее рынка?** — лидеры относительно категории
+- **Какие отзывы требуют реакции?** — приоритетная очередь для менеджера
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
-
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
-
-## Add your files
-
-* [Create](https://docs.gitlab.com/user/project/repository/web_editor/#create-a-file) or [upload](https://docs.gitlab.com/user/project/repository/web_editor/#upload-a-file) files
-* [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
+## Архитектура
 
 ```
-cd existing_repo
-git remote add origin https://gitlab.com/thesonikpk/mirrolla.git
-git branch -M main
-git push -uf origin main
+Вопрос менеджера
+  ↓
+Router (gpt-4o-mini) → skill + коды + период
+  ↓
+Planner (gpt-4o) → структурированный план (гипотезы, датасеты, метод)
+  ↓
+[HITL interrupt — approve / revise / reject]
+  ↓
+Executor (OpenAI Code Interpreter) → фактура (findings)
+  ↓
+Reporter (gpt-4o) → человекочитаемый ответ менеджеру
 ```
 
-## Integrate with your tools
+**Стек:** Python 3.11, FastAPI, LangGraph, OpenAI Responses API (Code Interpreter), SQLite checkpointer.
 
-* [Set up project integrations](https://gitlab.com/thesonikpk/mirrolla/-/settings/integrations)
+## Быстрый старт (Docker)
 
-## Collaborate with your team
+```bash
+# 1. Скопировать и заполнить .env
+cp .env.example .env
+# Вписать OPENAI_API_KEY
 
-* [Invite team members and collaborators](https://docs.gitlab.com/user/project/members/)
-* [Create a new merge request](https://docs.gitlab.com/user/project/merge_requests/creating_merge_requests/)
-* [Automatically close issues from merge requests](https://docs.gitlab.com/user/project/issues/managing_issues/#closing-issues-automatically)
-* [Enable merge request approvals](https://docs.gitlab.com/user/project/merge_requests/approvals/)
-* [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
+# 2. Запустить
+docker compose up --build
 
-## Test and Deploy
+# 3. Открыть
+# UI:   http://localhost:8080
+# API:  http://localhost:8000/docs
+```
 
-Use the built-in continuous integration in GitLab.
+## Быстрый старт (без Docker, локально)
 
-* [Get started with GitLab CI/CD](https://docs.gitlab.com/ci/quick_start/)
-* [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/user/application_security/sast/)
-* [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/topics/autodevops/requirements/)
-* [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/user/clusters/agent/)
-* [Set up protected environments](https://docs.gitlab.com/ci/environments/protected_environments/)
+**Требования:** Python 3.11+, доступ к OpenAI API.
 
-***
+```bash
+# 1. Виртуальное окружение
+python -m venv venv
+source venv/bin/activate   # Windows: venv\Scripts\activate
 
-# Editing this README
+# 2. Зависимости
+pip install -r requirements.txt
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
+# 3. Конфиг
+cp .env.example .env
+# Вписать OPENAI_API_KEY (= переменная token)
 
-## Suggestions for a good README
+# 4. Данные
+# Положить xlsx-файлы в data/:
+#   data/озон 17.03-16.04.xlsx
+#   data/озон 17.04-16.05.xlsx
+#   data/озон 17.05-16.06.xlsx
+#   data/Отзывы ВБ 17.03-17.06.2026.xlsx
+# Выгрузить products.json из 1С (через client/onec_client.py)
 
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
+# 5. Запуск
+uvicorn api.main:app --port 8000    # API на :8000
 
-## Name
-Choose a self-explaining name for your project.
+# 6. Открыть UI
+# Файл: ui/mirrolla_assistant.html (в браузере)
+# или запустить nginx: cd ui && python -m http.server 8080
+```
 
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
+## Использование
 
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
+### UI (рекомендуется)
 
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
+Открыть `ui/mirrolla_assistant.html` в браузере → задать вопрос → подтвердить план → получить ответ.
 
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
+### API
 
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
+```bash
+# Создать анализ
+curl -X POST http://localhost:8000/api/v1/analyses \
+  -H "Content-Type: application/json" \
+  -d '{"question":"какие товары заканчиваются?"}'
 
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
+# → {"id": "uuid", "status": "awaiting_approval", "plan": {...}}
 
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
+# Подтвердить
+curl -X POST http://localhost:8000/api/v1/analyses/{id}/approve
 
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
+# → {"status": "executing", ...}
 
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
+# Получить результат (poll)
+curl http://localhost:8000/api/v1/analyses/{id}
 
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
+# → {"status": "done", "result": {"findings": [...], "summary": "..."}}
+```
 
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
+### CLI (LangGraph, с HITL)
 
-## License
-For open source projects, say how it is licensed.
+```bash
+# Новый анализ
+python -m agent "какие товары заканчиваются?"
 
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+# План появится, сервис остановится на interrupt.
+# Thread ID: xxx → сохранить.
+
+# Через час (или день) — resume:
+python -m agent --resume xxx approve
+python -m agent --resume xxx revise "период 30 дней"
+python -m agent --resume xxx reject
+
+# Список всех анализов
+python -m agent --list
+```
+
+### Авто-отчёт (фиксированный workflow)
+
+```bash
+# 1. Запустить API
+uvicorn api.main:app --port 8000 &
+
+# 2. Запустить генерацию отчёта
+python -m reports.generator --output reports/output/management_report.md
+```
+
+Сгенерирует 4 анализа (топ-10 рост, топ-10 падение, критические остатки, негатив отзывы) и соберёт markdown-отчёт.
+
+## Структура проекта
+
+```
+mirrolla-ai/
+├── agent/
+│   ├── router.py         # M2: классификация вопроса
+│   ├── planner.py        # M3: план анализа
+│   ├── executor.py       # M4: запуск через OpenAI Code Interpreter
+│   ├── ci_runner.py      # Responses API + Code Interpreter
+│   ├── reporter.py       # M4.5: LLM-синтез ответа
+│   ├── graph.py          # M5: LangGraph StateGraph + interrupt
+│   ├── nodes.py          # M5: узлы графа
+│   └── schemas.py        # Pydantic модели (Finding, ExecutionResult)
+├── api/
+│   └── main.py           # M6: FastAPI (7 эндпоинтов)
+├── ui/
+│   ├── mirrolla_assistant.html  # M7: чат-интерфейс
+│   └── nginx.conf        # конфиг для Docker UI
+├── reports/
+│   └── generator.py      # M8: авто-отчёт
+├── data/                 # Ozon/WB xlsx, products.json
+├── client/
+│   └── onec_client.py    # 1С интеграция
+├── helpers/               # чистый Python аналитики
+├── docs/                  # архитектурные заметки
+├── .hermes/PLAN.md        # поэтапный план
+├── Dockerfile
+├── compose.yaml
+├── requirements.txt
+└── README.md
+```
+
+## Переменные окружения
+
+| Переменная | Назначение | Дефолт |
+|------------|------------|--------|
+| `token` | OpenAI API key | (обязательно) |
+| `MIRROLLA_API` | URL API для авто-отчёта | `http://127.0.0.1:8000/api/v1` |
+| `ROUTER_MODEL` | Модель для router | `gpt-4o-mini` |
+| `PLANNER_MODEL` | Модель для planner | `gpt-4o` |
+| `EXECUTOR_MODEL` | Модель для CI | `gpt-4o-mini` |
+| `REPORTER_MODEL` | Модель для синтеза ответа | `gpt-4o` |
+
+## Известные ограничения
+
+- **Цены** — нет данных о ценах продажи, нельзя рассчитать оптимальную цену
+- **WB заказы** — WB-выгрузка содержит только отзывы, нет данных о заказах
+- **Сравнение с рынком** — нет внешних данных, сравниваем с собственной категорией
+- **Остатки 1С** — текущий snapshot, нет истории
+
+## Лицензия
+
+Internal use only.

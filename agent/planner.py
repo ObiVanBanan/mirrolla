@@ -360,6 +360,7 @@ def _fallback_plan(question: str, routing: RoutingResult, extra_warnings: list[s
         ],
     }
 
+    limitations: list[str] = []
     if skill != SkillType.SALES_DECLINE:
         hypotheses = plans[skill]
         limitations = limitations_map.get(skill, [])

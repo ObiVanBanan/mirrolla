@@ -140,48 +140,11 @@ def _extract_period(text: str) -> int:
     text_lower = text.lower()
     if "месяц" in text_lower:
         return 30
-    if "недел" in text_lower:
-        return 7
     if "две недел" in text_lower or "2 недел" in text_lower:
         return 14
+    if "недел" in text_lower:
+        return 7
     return 14  # дефолт
-
-
-async def route(text: str) -> RoutingResult:
-    """
-    Маршрутизация вопроса через LLM.
-
-    Args:
-        text: вопрос менеджера.
-
-    Returns:
-        RoutingResult: skill + product_codes + period_days.
-    """
-    if not API_KEY:
-        print("  [Router] ⚠ API ключ не найден, использую keyword-fallback")
-        return _keyword_fallback(text)
-
-    try:
-        from langchain_openai import ChatOpenAI
-
-        llm = ChatOpenAI(
-            model=MODEL_NAME,
-            api_key=API_KEY,
-            temperature=0,
-        )
-        structured_llm = llm.with_structured_output(RoutingResult)
-        result = structured_llm.invoke(
-            [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": text},
-            ]
-        )
-        return result
-
-    except Exception as e:
-        print(f"  [Router] ⚠ LLM ошибся: {e}")
-        print("  [Router] → fallback на keyword-классификацию")
-        return _keyword_fallback(text)
 
 
 def route_sync(text: str) -> RoutingResult:

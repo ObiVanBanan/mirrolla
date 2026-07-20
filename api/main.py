@@ -18,12 +18,15 @@ import os
 import sys
 import uuid
 import json
+import re
+import time
 import sqlite3
-import asyncio
+from collections import defaultdict
+from contextlib import asynccontextmanager
 from typing import Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel, Field
@@ -46,13 +49,31 @@ from agent.schemas import AnalysisPlan, ExecutionResult, SkillType, Finding
 CHECKPOINT_DB = os.path.join(PROJECT_ROOT, "data", "checkpoints.sqlite")
 ANALYSES_DB = os.path.join(PROJECT_ROOT, "data", "analyses.sqlite")
 
+# API key auth
+API_KEY = os.getenv("API_KEY", "")
+
+# CORS origins
+CORS_ORIGINS = os.getenv("CORS_ORIGINS", "").strip()
+if CORS_ORIGINS:
+    CORS_ORIGINS_LIST = [o.strip() for o in CORS_ORIGINS.split(",") if o.strip()]
+else:
+    CORS_ORIGINS_LIST = ["*"]
+
+# === SQLite ===
+
+_db_initialized = False
+
 
 def _get_analyses_conn():
     """SQLite connection для хранения метаданных анализов."""
+    global _db_initialized
     os.makedirs(os.path.dirname(ANALYSES_DB), exist_ok=True)
     conn = sqlite3.connect(ANALYSES_DB, check_same_thread=False)
     conn.row_factory = sqlite3.Row
-    _init_analyses_db(conn)
+    conn.execute("PRAGMA journal_mode=WAL")
+    if not _db_initialized:
+        _init_analyses_db(conn)
+        _db_initialized = True
     return conn
 
 
@@ -71,6 +92,41 @@ def _init_analyses_db(conn):
         )
     """)
     conn.commit()
+
+
+# === Rate limiter (in-memory, per IP) ===
+
+_rate_log: dict[str, list[float]] = defaultdict(list)
+RATE_LIMIT_WINDOW = 60  # секунд
+RATE_LIMIT_MAX = 10  # запросов в окно
+
+
+def _check_rate_limit(client_ip: str):
+    """Проверить лимит запросов для IP. Raises 429 если превышен."""
+    now = time.time()
+    timestamps = _rate_log[client_ip]
+    # чистим старые
+    _rate_log[client_ip] = [t for t in timestamps if now - t < RATE_LIMIT_WINDOW]
+    if len(_rate_log[client_ip]) >= RATE_LIMIT_MAX:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Слишком много запросов. Лимит: {RATE_LIMIT_MAX} в {RATE_LIMIT_WINDOW}с.",
+        )
+    _rate_log[client_ip].append(now)
+
+
+# === API Key auth ===
+
+def verify_api_key(x_api_key: str = Header(default="")):
+    """Проверить API ключ. Если API_KEY пуст — auth отключена (dev mode)."""
+    if API_KEY and x_api_key != API_KEY:
+        raise HTTPException(status_code=401, detail="Неверный API ключ")
+
+
+def _validate_analysis_id(analysis_id: str):
+    """Валидация analysis_id: alphanumeric + hyphens, max 64 символа."""
+    if not re.match(r"^[a-zA-Z0-9\-]{1,64}$", analysis_id):
+        raise HTTPException(status_code=400, detail="Некорректный analysis_id")
 
 
 # === Pydantic models для API ===
@@ -96,17 +152,26 @@ class AnalysisResponse(BaseModel):
 
 # === FastAPI app ===
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Инициализация БД при старте."""
+    _get_analyses_conn()
+    print(f"[API] Analyses DB: {ANALYSES_DB}")
+    yield
+
+
 app = FastAPI(
     title="Mirrolla AI Assistant",
     description="Аналитический ассистент для маркетплейсов WB+Ozon",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 # CORS — для UI на file:// или другом порту
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # dev: можно ограничить для prod
-    allow_credentials=True,
+    allow_origins=CORS_ORIGINS_LIST,
+    allow_credentials=CORS_ORIGINS_LIST != ["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -124,23 +189,23 @@ async def main_page():
 
     return FileResponse(UI_INDEX)
 
-@app.on_event("startup")
-async def startup():
-    """Инициализация БД при старте."""
-    _get_analyses_conn()
-    print(f"[API] Analyses DB: {ANALYSES_DB}")
-
 
 # === Эндпоинты ===
 
 @app.post("/api/v1/analyses", response_model=AnalysisResponse)
-async def create_analysis(req: CreateAnalysisRequest):
+def create_analysis(
+    req: CreateAnalysisRequest,
+    request: Request,
+    _: None = Depends(verify_api_key),
+):
     """Создать анализ: question → Router → Planner → план.
 
     Возвращает analysis_id + план. Статус: awaiting_approval.
     """
     if not req.question.strip():
         raise HTTPException(status_code=400, detail="question не может быть пустым")
+
+    _check_rate_limit(request.client.host if request.client else "unknown")
 
     analysis_id = str(uuid.uuid4())
 
@@ -152,25 +217,30 @@ async def create_analysis(req: CreateAnalysisRequest):
 
     # Сохранить в БД
     conn = _get_analyses_conn()
-    conn.execute(
-        "INSERT INTO analyses (id, question, skill, status, plan_json) VALUES (?, ?, ?, ?, ?)",
-        (analysis_id, req.question, plan.skill.value, "awaiting_approval",
-         json.dumps(plan.model_dump(), ensure_ascii=False, default=str))
-    )
-    conn.commit()
+    try:
+        conn.execute(
+            "INSERT INTO analyses (id, question, skill, status, plan_json) VALUES (?, ?, ?, ?, ?)",
+            (analysis_id, req.question, plan.skill.value, "awaiting_approval",
+             json.dumps(plan.model_dump(), ensure_ascii=False, default=str))
+        )
+        conn.commit()
 
-    row = conn.execute("SELECT * FROM analyses WHERE id = ?", (analysis_id,)).fetchone()
-    conn.close()
+        row = conn.execute("SELECT * FROM analyses WHERE id = ?", (analysis_id,)).fetchone()
+    finally:
+        conn.close()
 
     return _row_to_response(row)
 
 
 @app.get("/api/v1/analyses/{analysis_id}", response_model=AnalysisResponse)
-async def get_analysis(analysis_id: str):
+def get_analysis(analysis_id: str):
     """Получить статус + результат анализа."""
+    _validate_analysis_id(analysis_id)
     conn = _get_analyses_conn()
-    row = conn.execute("SELECT * FROM analyses WHERE id = ?", (analysis_id,)).fetchone()
-    conn.close()
+    try:
+        row = conn.execute("SELECT * FROM analyses WHERE id = ?", (analysis_id,)).fetchone()
+    finally:
+        conn.close()
 
     if not row:
         raise HTTPException(status_code=404, detail=f"Анализ {analysis_id} не найден")
@@ -179,108 +249,145 @@ async def get_analysis(analysis_id: str):
 
 
 @app.post("/api/v1/analyses/{analysis_id}/approve", response_model=AnalysisResponse)
-async def approve_analysis(analysis_id: str, background_tasks: BackgroundTasks):
+def approve_analysis(
+    analysis_id: str,
+    background_tasks: BackgroundTasks,
+    request: Request,
+    _: None = Depends(verify_api_key),
+):
     """Подтвердить план → запустить выполнение (async).
 
     Возвращает статус executing. Результат можно получить через GET.
     """
+    _validate_analysis_id(analysis_id)
+    _check_rate_limit(request.client.host if request.client else "unknown")
+
     conn = _get_analyses_conn()
-    row = conn.execute("SELECT * FROM analyses WHERE id = ?", (analysis_id,)).fetchone()
+    try:
+        # Атомарная проверка и обновление статуса — защита от race condition
+        cursor = conn.execute(
+            "UPDATE analyses SET status = 'executing', updated_at = CURRENT_TIMESTAMP "
+            "WHERE id = ? AND status = 'awaiting_approval'",
+            (analysis_id,)
+        )
+        conn.commit()
 
-    if not row:
+        if cursor.rowcount == 0:
+            # Либо не найден, либо не в статусе awaiting_approval
+            row = conn.execute("SELECT * FROM analyses WHERE id = ?", (analysis_id,)).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail=f"Анализ {analysis_id} не найден")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Анализ в статусе {row['status']}, нельзя approve"
+            )
+
+        # Запустить выполнение в фоне
+        background_tasks.add_task(_execute_analysis_background, analysis_id)
+    finally:
         conn.close()
-        raise HTTPException(status_code=404, detail=f"Анализ {analysis_id} не найден")
-
-    if row["status"] not in ("awaiting_approval",):
-        conn.close()
-        raise HTTPException(status_code=400, detail=f"Анализ в статусе {row['status']}, нельзя approve")
-
-    # Обновить статус
-    conn.execute("UPDATE analyses SET status = 'executing', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                 (analysis_id,))
-    conn.commit()
-    conn.close()
-
-    # Запустить выполнение в фоне
-    background_tasks.add_task(_execute_analysis_background, analysis_id)
 
     return _row_to_response(row=None, analysis_id=analysis_id, status="executing")
 
 
 @app.post("/api/v1/analyses/{analysis_id}/revise", response_model=AnalysisResponse)
-async def revise_analysis(analysis_id: str, req: ReviseRequest):
+def revise_analysis(
+    analysis_id: str,
+    req: ReviseRequest,
+    request: Request,
+    _: None = Depends(verify_api_key),
+):
     """Правка плана: обновить период/product_code → пересобрать план."""
-    import re
+    _validate_analysis_id(analysis_id)
+    _check_rate_limit(request.client.host if request.client else "unknown")
 
     conn = _get_analyses_conn()
-    row = conn.execute("SELECT * FROM analyses WHERE id = ?", (analysis_id,)).fetchone()
+    try:
+        row = conn.execute("SELECT * FROM analyses WHERE id = ?", (analysis_id,)).fetchone()
 
-    if not row:
+        if not row:
+            raise HTTPException(status_code=404, detail=f"Анализ {analysis_id} не найден")
+        if row["status"] != "awaiting_approval":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Анализ в статусе {row['status']}, нельзя revise"
+            )
+
+        # Загрузить текущий план
+        plan_dict = json.loads(row["plan_json"])
+        plan = AnalysisPlan(**plan_dict)
+
+        # Парсинг feedback → обновление routing
+        feedback = req.feedback
+        updates = {}
+        period_match = re.search(r"период\s*(\d+)", feedback.lower())
+        if period_match:
+            updates["period_days"] = int(period_match.group(1))
+        code_match = re.findall(r"(?:ЦБ|ФР)-\d{8}", feedback)
+        if code_match:
+            updates["product_codes"] = code_match
+
+        # Пересобрать plan с обновлённым routing
+        from agent.schemas import RoutingResult, PeriodSpec
+        routing = RoutingResult(
+            skill=plan.skill,
+            product_codes=updates.get("product_codes", plan.product_codes),
+            period_days=updates.get("period_days", plan.period.current_days),
+        )
+        new_plan = generate_plan(row["question"], routing=routing)
+
+        conn.execute(
+            "UPDATE analyses SET plan_json = ?, status = 'awaiting_approval', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (json.dumps(new_plan.model_dump(), ensure_ascii=False, default=str), analysis_id)
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM analyses WHERE id = ?", (analysis_id,)).fetchone()
+    finally:
         conn.close()
-        raise HTTPException(status_code=404, detail=f"Анализ {analysis_id} не найден")
-
-    if row["status"] != "awaiting_approval":
-        conn.close()
-        raise HTTPException(status_code=400, detail=f"Анализ в статусе {row['status']}, нельзя revise")
-
-    # Загрузить текущий план
-    plan_dict = json.loads(row["plan_json"])
-    plan = AnalysisPlan(**plan_dict)
-
-    # Парсинг feedback → обновление routing
-    feedback = req.feedback
-    updates = {}
-    period_match = re.search(r"период\s*(\d+)", feedback.lower())
-    if period_match:
-        updates["period_days"] = int(period_match.group(1))
-    code_match = re.findall(r"(?:ЦБ|ФР)-\d{8}", feedback)
-    if code_match:
-        updates["product_codes"] = code_match
-
-    # Пересобрать plan с обновлённым routing
-    from agent.schemas import RoutingResult, PeriodSpec
-    routing = RoutingResult(
-        skill=plan.skill,
-        product_codes=updates.get("product_codes", plan.product_codes),
-        period_days=updates.get("period_days", plan.period.current_days),
-    )
-    new_plan = generate_plan(row["question"], routing=routing)
-
-    conn.execute(
-        "UPDATE analyses SET plan_json = ?, status = 'awaiting_approval', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-        (json.dumps(new_plan.model_dump(), ensure_ascii=False, default=str), analysis_id)
-    )
-    conn.commit()
-    row = conn.execute("SELECT * FROM analyses WHERE id = ?", (analysis_id,)).fetchone()
-    conn.close()
 
     return _row_to_response(row)
 
 
 @app.post("/api/v1/analyses/{analysis_id}/reject", response_model=AnalysisResponse)
-async def reject_analysis(analysis_id: str):
+def reject_analysis(
+    analysis_id: str,
+    request: Request,
+    _: None = Depends(verify_api_key),
+):
     """Отклонить план."""
+    _validate_analysis_id(analysis_id)
+    _check_rate_limit(request.client.host if request.client else "unknown")
+
     conn = _get_analyses_conn()
-    row = conn.execute("SELECT * FROM analyses WHERE id = ?", (analysis_id,)).fetchone()
+    try:
+        row = conn.execute("SELECT * FROM analyses WHERE id = ?", (analysis_id,)).fetchone()
 
-    if not row:
+        if not row:
+            raise HTTPException(status_code=404, detail=f"Анализ {analysis_id} не найден")
+
+        conn.execute(
+            "UPDATE analyses SET status = 'rejected', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (analysis_id,)
+        )
+        conn.commit()
+    finally:
         conn.close()
-        raise HTTPException(status_code=404, detail=f"Анализ {analysis_id} не найден")
-
-    conn.execute("UPDATE analyses SET status = 'rejected', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                 (analysis_id,))
-    conn.commit()
-    conn.close()
 
     return _row_to_response(row=None, analysis_id=analysis_id, status="rejected")
 
 
 @app.post("/api/v1/reports/management")
-async def management_report(background_tasks: BackgroundTasks):
+def management_report(
+    background_tasks: BackgroundTasks,
+    request: Request,
+    _: None = Depends(verify_api_key),
+):
     """Авто-отчёт: fixed workflow (топ-10 рост, топ-10 падение, критические остатки, отзывы).
 
     Запускает 4 анализа параллельно и собирает результаты.
     """
+    _check_rate_limit(request.client.host if request.client else "unknown")
+
     questions = [
         "Что растёт быстрее рынка?",
         "Топ-10 падающих товаров",
@@ -292,20 +399,22 @@ async def management_report(background_tasks: BackgroundTasks):
     # Создаём 4 анализа
     analysis_ids = []
     conn = _get_analyses_conn()
-    for q in questions:
-        aid = str(uuid.uuid4())
-        routing = route_sync(q)
-        plan = generate_plan(q, routing=routing)
-        conn.execute(
-            "INSERT INTO analyses (id, question, skill, status, plan_json) VALUES (?, ?, ?, ?, ?)",
-            (aid, q, plan.skill.value, "executing",
-             json.dumps(plan.model_dump(), ensure_ascii=False, default=str))
-        )
-        analysis_ids.append(aid)
-        # Запускаем в фоне
-        background_tasks.add_task(_execute_analysis_background, aid)
-    conn.commit()
-    conn.close()
+    try:
+        for q in questions:
+            aid = str(uuid.uuid4())
+            routing = route_sync(q)
+            plan = generate_plan(q, routing=routing)
+            conn.execute(
+                "INSERT INTO analyses (id, question, skill, status, plan_json) VALUES (?, ?, ?, ?, ?)",
+                (aid, q, plan.skill.value, "executing",
+                 json.dumps(plan.model_dump(), ensure_ascii=False, default=str))
+            )
+            analysis_ids.append(aid)
+            # Запускаем в фоне
+            background_tasks.add_task(_execute_analysis_background, aid)
+        conn.commit()
+    finally:
+        conn.close()
 
     return {
         "report_id": report_id,
@@ -316,7 +425,7 @@ async def management_report(background_tasks: BackgroundTasks):
 
 
 @app.get("/api/v1/health")
-async def health():
+def health():
     """Health check."""
     return {"status": "ok", "service": "mirrolla-ai"}
 
