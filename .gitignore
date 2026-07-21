@@ -7,6 +7,8 @@ data/*.xlsx
 data/*.sqlite
 data/charts/
 data/prepared/*.json
+data/_backup_originals/
+data/smoke_test_results.json
 
 # Python
 venv/

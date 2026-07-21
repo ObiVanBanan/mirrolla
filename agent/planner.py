@@ -291,9 +291,9 @@ def _fallback_plan(question: str, routing: RoutingResult, extra_warnings: list[s
         )
 
     # Выбор гипотез по периоду
-    period = routing.period_days
+    period_days = routing.period_days
 
-    if period <= 7:
+    if period_days <= 7:
         # Короткий — операционные причины
         hypotheses = [
             Hypothesis(id="H1", title="Out-of-stock / технический сбой", datasets=["sales", "stocks"],
@@ -304,7 +304,7 @@ def _fallback_plan(question: str, routing: RoutingResult, extra_warnings: list[s
                        helpers=["negative_reviews_wb", "reviews_requiring_response"]),
         ]
         comparison = "previous_equal_period"
-    elif period <= 30:
+    elif period_days <= 30:
         # Средний — сбалансированный
         hypotheses = [
             Hypothesis(id="H1", title="Дефицит остатков", datasets=["sales", "stocks"],
@@ -337,7 +337,7 @@ def _fallback_plan(question: str, routing: RoutingResult, extra_warnings: list[s
                        method="Сравнить продажи товара с его категорией за весь период. Рыночный тренд.",
                        helpers=["category_growth_by_type", "faster_than_market", "load_product_categories"]),
         ]
-        comparison = "year_over_year" if period >= 180 else "previous_equal_period"
+        comparison = "year_over_year" if period_days >= 180 else "previous_equal_period"
 
     # Для остальных skill'ов (inventory, portfolio, reviews) используем шаблоны
     limitations_map: dict[SkillType, list[str]] = {
@@ -366,6 +366,9 @@ def _fallback_plan(question: str, routing: RoutingResult, extra_warnings: list[s
         limitations = limitations_map.get(skill, [])
         comparison = "previous_equal_period"
     limitations.extend(extra_warnings)
+
+    # Применить вычисленный comparison к period (иначе всегда previous_equal_period)
+    period = period.model_copy(update={"comparison": comparison})
 
     return AnalysisPlan(
         skill=skill,
