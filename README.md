@@ -26,7 +26,7 @@ Executor (OpenAI Code Interpreter) → фактура (findings)
 Reporter (gpt-4o) → человекочитаемый ответ менеджеру
 ```
 
-**Стек:** Python 3.11, FastAPI, LangGraph, OpenAI Responses API (Code Interpreter), SQLite checkpointer.
+**Стек:** Python 3.12, FastAPI, LangGraph, OpenAI Responses API (Code Interpreter), SQLite checkpointer.
 
 ## Быстрый старт (Docker)
 
@@ -39,13 +39,13 @@ cp .env.example .env
 docker compose up --build
 
 # 3. Открыть
-# UI:   http://localhost:8080
-# API:  http://localhost:8000/docs
+# UI:   http://localhost:8080    ← чат-интерфейс (nginx отдаёт HTML)
+# API:  http://localhost:8000/docs ← FastAPI Swagger
 ```
 
 ## Быстрый старт (без Docker, локально)
 
-**Требования:** Python 3.11+, доступ к OpenAI API.
+**Требования:** Python 3.12+, доступ к OpenAI API.
 
 ```bash
 # 1. Виртуальное окружение
@@ -135,29 +135,29 @@ python -m reports.generator --output reports/output/management_report.md
 ## Структура проекта
 
 ```
-mirrolla-ai/
+mirrolla/
 ├── agent/
-│   ├── router.py         # M2: классификация вопроса
-│   ├── planner.py        # M3: план анализа
-│   ├── executor.py       # M4: запуск через OpenAI Code Interpreter
+│   ├── router.py         # классификация вопроса
+│   ├── planner.py        # план анализа
+│   ├── executor.py       # запуск через OpenAI Code Interpreter
 │   ├── ci_runner.py      # Responses API + Code Interpreter
-│   ├── reporter.py       # M4.5: LLM-синтез ответа
-│   ├── graph.py          # M5: LangGraph StateGraph + interrupt
-│   ├── nodes.py          # M5: узлы графа
+│   ├── reporter.py       # LLM-синтез ответа
+│   ├── graph.py          # LangGraph StateGraph + interrupt
+│   ├── nodes.py          # узлы графа
 │   └── schemas.py        # Pydantic модели (Finding, ExecutionResult)
 ├── api/
-│   └── main.py           # M6: FastAPI (7 эндпоинтов)
+│   └── main.py           # FastAPI (7 эндпоинтов)
 ├── ui/
-│   ├── mirrolla_assistant.html  # M7: чат-интерфейс
+│   ├── mirrolla_assistant.html  # чат-интерфейс (порт 8080 в Docker)
 │   └── nginx.conf        # конфиг для Docker UI
 ├── reports/
-│   └── generator.py      # M8: авто-отчёт
+│   └── generator.py      # авто-отчёт
 ├── data/                 # Ozon/WB xlsx, products.json
 ├── client/
 │   └── onec_client.py    # 1С интеграция
-├── helpers/               # чистый Python аналитики
-├── docs/                  # архитектурные заметки
-├── .hermes/PLAN.md        # поэтапный план
+├── helpers/              # чистый Python аналитики
+├── tools/                # утилиты: smoke-тест, генерация синтетики, raw CI
+├── docs/                 # архитектурный документ, план, презентация
 ├── Dockerfile
 ├── compose.yaml
 ├── requirements.txt
@@ -174,6 +174,11 @@ mirrolla-ai/
 | `PLANNER_MODEL` | Модель для planner | `gpt-4o` |
 | `EXECUTOR_MODEL` | Модель для CI | `gpt-4o-mini` |
 | `REPORTER_MODEL` | Модель для синтеза ответа | `gpt-4o` |
+| `ONE_C_URL` | URL 1С (для pre-fetch balances) | (не задан) |
+| `ONE_C_USER` | Пользователь 1С | (не задан) |
+| `ONE_C_PASS` | Пароль 1С | (не задан) |
+| `API_KEY` | API ключ для защиты POST эндпоинтов | (пусто = auth отключена) |
+| `CORS_ORIGINS` | CORS origins через запятую | `http://localhost:8080,...` |
 
 ## Известные ограничения
 
