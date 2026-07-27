@@ -6,6 +6,7 @@ services:
       - .env
     volumes:
       - ./data:/app/data
+      - ./data/uploads:/app/data/uploads
       - ./reports/output:/app/reports/output
     ports:
       - "8000:8000"
