@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import logging
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel, Field
@@ -9,6 +10,7 @@ from application.datasets.models import Dataset, DataWorkspace, DatasetVersion
 from application.datasets.service import (
     DatasetNotFoundError,
     DatasetServiceError,
+    DatasetVersionNotFoundError,
     InvalidDatasetStateError,
     WorkspaceNotFoundError,
 )
@@ -19,6 +21,8 @@ from infrastructure.storage.local_files import (
     StreamReadError,
     UnsupportedExtensionError,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def build_datasets_router(*, verify_api_key, check_rate_limit):
@@ -33,7 +37,6 @@ def build_datasets_router(*, verify_api_key, check_rate_limit):
         id: str
         dataset_id: str
         original_filename: str
-        storage_key: str | None = None
         format: str | None = None
         size_bytes: int | None = None
         checksum_sha256: str | None = None
@@ -57,6 +60,7 @@ def build_datasets_router(*, verify_api_key, check_rate_limit):
         version_id: str
         status: str
         profile: dict | None = None
+        issues: list[dict] = Field(default_factory=list)
 
     class UploadDatasetResponse(BaseModel):
         dataset: DatasetResponse
@@ -90,7 +94,6 @@ def build_datasets_router(*, verify_api_key, check_rate_limit):
             id=version.id,
             dataset_id=version.dataset_id,
             original_filename=version.original_filename,
-            storage_key=version.storage_key,
             format=version.format,
             size_bytes=version.size_bytes,
             checksum_sha256=version.checksum_sha256,
@@ -110,7 +113,10 @@ def build_datasets_router(*, verify_api_key, check_rate_limit):
         )
 
     def _handle_dataset_error(exc: Exception) -> HTTPException:
-        if isinstance(exc, (WorkspaceNotFoundError, DatasetNotFoundError)):
+        if isinstance(
+            exc,
+            (WorkspaceNotFoundError, DatasetNotFoundError, DatasetVersionNotFoundError),
+        ):
             return HTTPException(status_code=404, detail=str(exc))
         if isinstance(exc, InvalidDatasetStateError):
             return HTTPException(status_code=409, detail=str(exc))
@@ -122,7 +128,8 @@ def build_datasets_router(*, verify_api_key, check_rate_limit):
             return HTTPException(status_code=400, detail=str(exc))
         if isinstance(exc, DatasetServiceError):
             return HTTPException(status_code=409, detail=str(exc))
-        return HTTPException(status_code=500, detail=str(exc))
+        logger.exception("Dataset API failure")
+        return HTTPException(status_code=500, detail="Internal dataset operation failed")
 
     @router.get("/workspaces/default", response_model=WorkspaceResponse)
     def get_default_workspace(
@@ -167,8 +174,10 @@ def build_datasets_router(*, verify_api_key, check_rate_limit):
         service = _dataset_service(request)
         repository = _dataset_repository(request)
         storage = _raw_file_storage(request)
+        created_new_dataset = dataset_id is None
         dataset = None
         version = None
+        stored = None
         try:
             dataset, version = service.register_upload_receiving(
                 workspace_id,
@@ -192,18 +201,29 @@ def build_datasets_router(*, verify_api_key, check_rate_limit):
                 checksum_sha256=stored.checksum_sha256,
                 file_format=suffix,
             )
-            profiling = service.start_profiling(uploaded.id)
             return UploadDatasetResponse(
                 dataset=_dataset_response(dataset, repository.list_dataset_versions(dataset.id)),
-                version=_version_response(profiling),
+                version=_version_response(uploaded),
                 deduplicated=stored.deduplicated,
             )
         except Exception as exc:
             if version is not None:
                 try:
                     service.soft_delete_version(version.id)
+                    repository.purge_dataset_version(version.id)
                 except Exception:
                     pass
+            if stored is not None:
+                try:
+                    if repository.count_versions_by_storage_key(stored.storage_key) == 0:
+                        storage.delete(stored.storage_key)
+                except Exception:
+                    logger.exception("Failed to clean orphaned dataset blob")
+            if dataset is not None and created_new_dataset:
+                try:
+                    repository.delete_dataset_if_empty(dataset.id)
+                except Exception:
+                    logger.exception("Failed to delete empty dataset after upload rollback")
             raise _handle_dataset_error(exc)
         finally:
             file.file.close()
@@ -234,6 +254,7 @@ def build_datasets_router(*, verify_api_key, check_rate_limit):
             version_id=version.id,
             status=version.status,
             profile=version.profile.model_dump(mode="json") if version.profile else None,
+            issues=[issue.model_dump(mode="json") for issue in version.issues],
         )
 
     @router.delete("/dataset-versions/{version_id}", response_model=DeleteDatasetVersionResponse)

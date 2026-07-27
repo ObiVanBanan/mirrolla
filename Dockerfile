@@ -14,8 +14,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Код проекта
 COPY agent/ ./agent/
 COPY api/ ./api/
+COPY application/ ./application/
 COPY client/ ./client/
 COPY helpers/ ./helpers/
+COPY infrastructure/ ./infrastructure/
 COPY reports/ ./reports/
 COPY ui/ ./ui/
 # data/ монтируется через volume в compose.yaml.

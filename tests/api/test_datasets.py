@@ -1,10 +1,26 @@
 import os
 import tempfile
 import unittest
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
 from api import main as api_main
+from application.datasets.models import DatasetIssue, DatasetProfile
+from application.datasets.service import DatasetService
+
+
+class FailingCompleteUploadService(DatasetService):
+    def complete_upload(
+        self,
+        version_id: str,
+        *,
+        storage_key: str,
+        size_bytes: int,
+        checksum_sha256: str,
+        file_format: str,
+    ):
+        raise RuntimeError("storage metadata commit failed")
 
 
 class DatasetApiTests(unittest.TestCase):
@@ -50,8 +66,27 @@ class DatasetApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertEqual(payload["dataset"]["display_name"], "Sales")
-        self.assertEqual(payload["version"]["status"], "profiling")
+        self.assertEqual(payload["version"]["status"], "uploaded")
         self.assertEqual(payload["version"]["size_bytes"], 4)
+        self.assertNotIn("storage_key", payload["version"])
+
+    def test_list_datasets_after_successful_upload(self):
+        upload = self.client.post(
+            "/api/v1/workspaces/default/datasets",
+            files={"file": ("sales.csv", b"abcd", "text/csv")},
+            data={"display_name": "Sales"},
+        )
+
+        self.assertEqual(upload.status_code, 200)
+
+        response = self.client.get("/api/v1/workspaces/default/datasets")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(len(payload["datasets"]), 1)
+        self.assertEqual(payload["datasets"][0]["display_name"], "Sales")
+        self.assertEqual(len(payload["datasets"][0]["versions"]), 1)
+        self.assertEqual(payload["datasets"][0]["versions"][0]["status"], "uploaded")
 
     def test_upload_rejects_unsupported_type(self):
         response = self.client.post(
@@ -61,6 +96,10 @@ class DatasetApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 415)
 
+        listed = self.client.get("/api/v1/workspaces/default/datasets")
+        self.assertEqual(listed.status_code, 200)
+        self.assertEqual(listed.json()["datasets"], [])
+
     def test_upload_rejects_oversize(self):
         response = self.client.post(
             "/api/v1/workspaces/default/datasets",
@@ -68,6 +107,72 @@ class DatasetApiTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 413)
+
+        listed = self.client.get("/api/v1/workspaces/default/datasets")
+        self.assertEqual(listed.status_code, 200)
+        self.assertEqual(listed.json()["datasets"], [])
+
+    def test_upload_rejects_empty_file(self):
+        response = self.client.post(
+            "/api/v1/workspaces/default/datasets",
+            files={"file": ("sales.csv", b"", "text/csv")},
+        )
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_delete_unknown_version_returns_not_found(self):
+        response = self.client.delete("/api/v1/dataset-versions/unknown")
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_get_profile_returns_issues(self):
+        upload = self.client.post(
+            "/api/v1/workspaces/default/datasets",
+            files={"file": ("sales.csv", b"abcd", "text/csv")},
+        )
+        self.assertEqual(upload.status_code, 200)
+        version_id = upload.json()["version"]["id"]
+        repository = self.client.app.state.dataset_repository_factory()
+        version = repository.get_dataset_version(version_id)
+        self.assertIsNotNone(version)
+        assert version is not None
+        version.status = "invalid"
+        version.profile = DatasetProfile(format="csv", row_count=0, columns=[])
+        version.issues = [DatasetIssue(code="bad-header", message="Missing header", severity="error")]
+        repository.save_dataset_version(version)
+
+        response = self.client.get(f"/api/v1/dataset-versions/{version_id}/profile")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "invalid")
+        self.assertEqual(payload["issues"][0]["code"], "bad-header")
+
+    def test_upload_failure_after_blob_commit_cleans_orphan_blob_and_dataset(self):
+        original_factory = self.client.app.state.dataset_service_factory
+        repository_factory = self.client.app.state.dataset_repository_factory
+        dispatcher = self.client.app.state.dataset_job_dispatcher
+
+        def failing_factory():
+            return FailingCompleteUploadService(repository_factory(), dispatcher)
+
+        self.client.app.state.dataset_service_factory = failing_factory
+        try:
+            response = self.client.post(
+                "/api/v1/workspaces/default/datasets",
+                files={"file": ("sales.csv", b"abcd", "text/csv")},
+            )
+        finally:
+            self.client.app.state.dataset_service_factory = original_factory
+
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.json()["detail"], "Internal dataset operation failed")
+        listed = self.client.get("/api/v1/workspaces/default/datasets")
+        self.assertEqual(listed.status_code, 200)
+        self.assertEqual(listed.json()["datasets"], [])
+        uploads_root = Path(api_main.UPLOADS_ROOT)
+        blob_files = [path for path in uploads_root.rglob("*") if path.is_file()]
+        self.assertEqual(blob_files, [])
 
     def test_upload_strips_client_filesystem_path_from_filename(self):
         boundary = "dataset-boundary"
@@ -86,4 +191,3 @@ class DatasetApiTests(unittest.TestCase):
         payload = response.json()
         self.assertEqual(payload["version"]["original_filename"], "secret.csv")
         self.assertNotIn("\\", payload["version"]["original_filename"])
-        self.assertNotIn("secret.csv", payload["version"]["storage_key"])

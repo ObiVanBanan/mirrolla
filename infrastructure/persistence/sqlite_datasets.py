@@ -124,6 +124,22 @@ class SqliteDatasetRepository:
             ).fetchall()
         return [self._dataset_from_row(row) for row in rows]
 
+    def delete_dataset_if_empty(self, dataset_id: str) -> bool:
+        with self._connection() as conn:
+            cursor = conn.execute(
+                """
+                DELETE FROM datasets
+                WHERE id = ?
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM dataset_versions
+                      WHERE dataset_id = datasets.id
+                  )
+                """,
+                (dataset_id,),
+            )
+        return cursor.rowcount > 0
+
     def get_dataset_version(self, version_id: str) -> DatasetVersion | None:
         with self._connection() as conn:
             row = conn.execute(
