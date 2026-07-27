@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import dataclass
 from typing import BinaryIO, Protocol
 
 from application.datasets.models import (
@@ -11,10 +12,12 @@ from application.datasets.models import (
 )
 
 
-class StoredObjectRef(Protocol):
+@dataclass(frozen=True)
+class StoredObject:
     storage_key: str
     size_bytes: int
     checksum_sha256: str
+    deduplicated: bool = False
 
 
 class DatasetRepository(Protocol):
@@ -48,7 +51,16 @@ class DatasetRepository(Protocol):
 
 
 class RawFileStorage(Protocol):
-    def put_stream(self, version_id: str, stream: BinaryIO, max_bytes: int) -> StoredObjectRef: ...
+    def put_stream(
+        self,
+        *,
+        workspace_id: str,
+        dataset_id: str,
+        version_id: str,
+        original_filename: str,
+        stream: BinaryIO,
+        max_bytes: int,
+    ) -> StoredObject: ...
     def open_read(self, storage_key: str) -> BinaryIO: ...
     def delete(self, storage_key: str) -> None: ...
 
