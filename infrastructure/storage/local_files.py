@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import re
 from pathlib import Path
@@ -47,6 +46,8 @@ class LocalRawFileStorage:
         allowed_extensions: set[str] | frozenset[str] = ALLOWED_EXTENSIONS,
     ) -> None:
         self._root_dir = Path(root_dir).resolve()
+        if chunk_size <= 0:
+            raise ValueError("chunk_size must be greater than zero")
         self._chunk_size = chunk_size
         self._allowed_extensions = {ext.lower() for ext in allowed_extensions}
         self._root_dir.mkdir(parents=True, exist_ok=True)
@@ -61,14 +62,18 @@ class LocalRawFileStorage:
         stream,
         max_bytes: int,
     ) -> StoredObject:
-        suffix = self._validate_original_filename(original_filename)
-        raw_dir = self._version_raw_dir(workspace_id, dataset_id, version_id)
-        raw_dir.mkdir(parents=True, exist_ok=True)
+        self._validate_original_filename(original_filename)
+        if max_bytes <= 0:
+            raise ValueError("max_bytes must be greater than zero")
 
-        temp_name = f"{uuid4().hex}{suffix}.part"
-        temp_path = raw_dir / temp_name
+        temp_dir = self._version_temp_dir(workspace_id, dataset_id, version_id)
+        temp_dir.mkdir(parents=True, exist_ok=True)
+
+        temp_name = f"{uuid4().hex}.part"
+        temp_path = temp_dir / temp_name
         total_size = 0
         checksum = hashlib.sha256()
+        blob_path: Path | None = None
 
         try:
             with temp_path.open("xb") as handle:
@@ -95,32 +100,20 @@ class LocalRawFileStorage:
                 raise EmptyFileError("Upload stream is empty")
 
             checksum_sha256 = checksum.hexdigest()
-            deduplicated = self._find_existing_object(workspace_id, checksum_sha256)
-            if deduplicated is not None:
-                temp_path.unlink(missing_ok=True)
-                return StoredObject(
-                    storage_key=deduplicated,
-                    size_bytes=total_size,
-                    checksum_sha256=checksum_sha256,
-                    deduplicated=True,
-                )
-
-            final_name = f"{uuid4().hex}{suffix}"
-            final_path = raw_dir / final_name
-            os.replace(temp_path, final_path)
-            storage_key = self._storage_key_for(final_path)
-            self._write_checksum_index(
-                workspace_id=workspace_id,
-                checksum_sha256=checksum_sha256,
-                storage_key=storage_key,
-            )
+            blob_path = self._blob_path(workspace_id, checksum_sha256)
+            blob_path.parent.mkdir(parents=True, exist_ok=True)
+            deduplicated = self._commit_blob(temp_path, blob_path)
+            storage_key = self._storage_key_for(blob_path)
             return StoredObject(
                 storage_key=storage_key,
                 size_bytes=total_size,
                 checksum_sha256=checksum_sha256,
-                deduplicated=False,
+                deduplicated=deduplicated,
             )
         except Exception:
+            if blob_path is not None and blob_path.exists():
+                # Keep already committed shared blobs; only temp artifacts are cleaned here.
+                pass
             temp_path.unlink(missing_ok=True)
             raise
 
@@ -129,6 +122,7 @@ class LocalRawFileStorage:
         return path.open("rb")
 
     def delete(self, storage_key: str) -> None:
+        # Caller must prove no remaining metadata references the storage object.
         path = self._resolve_storage_key(storage_key)
         path.unlink(missing_ok=True)
 
@@ -153,39 +147,20 @@ class LocalRawFileStorage:
 
         return suffix
 
-    def _version_raw_dir(self, workspace_id: str, dataset_id: str, version_id: str) -> Path:
-        return self._safe_join(self._root_dir, workspace_id, dataset_id, version_id, "raw")
+    def _version_temp_dir(self, workspace_id: str, dataset_id: str, version_id: str) -> Path:
+        return self._safe_join(self._root_dir, workspace_id, dataset_id, version_id, "tmp")
 
-    def _index_dir(self, workspace_id: str) -> Path:
-        return self._safe_join(self._root_dir, workspace_id, ".checksums")
+    def _blob_path(self, workspace_id: str, checksum_sha256: str) -> Path:
+        return self._safe_join(self._root_dir, workspace_id, ".blobs", checksum_sha256)
 
-    def _find_existing_object(self, workspace_id: str, checksum_sha256: str) -> str | None:
-        index_path = self._index_dir(workspace_id) / f"{checksum_sha256}.json"
-        if not index_path.exists():
-            return None
-
-        payload = json.loads(index_path.read_text(encoding="utf-8"))
-        storage_key = payload["storage_key"]
-        object_path = self._resolve_storage_key(storage_key)
-        if not object_path.exists():
-            index_path.unlink(missing_ok=True)
-            return None
-        return storage_key
-
-    def _write_checksum_index(
-        self,
-        *,
-        workspace_id: str,
-        checksum_sha256: str,
-        storage_key: str,
-    ) -> None:
-        index_dir = self._index_dir(workspace_id)
-        index_dir.mkdir(parents=True, exist_ok=True)
-        index_path = index_dir / f"{checksum_sha256}.json"
-        temp_path = index_dir / f"{checksum_sha256}.{uuid4().hex}.part"
-        payload = json.dumps({"storage_key": storage_key}, ensure_ascii=True)
-        temp_path.write_text(payload, encoding="utf-8")
-        os.replace(temp_path, index_path)
+    def _commit_blob(self, temp_path: Path, blob_path: Path) -> bool:
+        try:
+            os.link(temp_path, blob_path)
+            temp_path.unlink(missing_ok=True)
+            return False
+        except FileExistsError:
+            temp_path.unlink(missing_ok=True)
+            return True
 
     def _storage_key_for(self, path: Path) -> str:
         return path.relative_to(self._root_dir).as_posix()

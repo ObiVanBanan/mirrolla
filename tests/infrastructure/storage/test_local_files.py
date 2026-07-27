@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from infrastructure.storage.local_files import (
@@ -80,6 +82,21 @@ class LocalRawFileStorageTests(unittest.TestCase):
         with self.storage.open_read(stored.storage_key) as handle:
             self.assertEqual(handle.read(), payload)
         self.assertEqual(stored.size_bytes, len(payload))
+        self.assertEqual(stored.checksum_sha256, hashlib.sha256(payload).hexdigest())
+
+    def test_rejects_non_positive_chunk_size(self) -> None:
+        with self.assertRaises(ValueError):
+            LocalRawFileStorage(self.root, chunk_size=0)
+
+        with self.assertRaises(ValueError):
+            LocalRawFileStorage(self.root, chunk_size=-1)
+
+    def test_rejects_non_positive_max_bytes(self) -> None:
+        with self.assertRaises(ValueError):
+            self.put_stream(b"data", max_bytes=0)
+
+        with self.assertRaises(ValueError):
+            self.put_stream(b"data", max_bytes=-1)
 
     def test_rejects_path_traversal_filename(self) -> None:
         with self.assertRaises(InvalidFilenameError):
@@ -130,12 +147,30 @@ class LocalRawFileStorageTests(unittest.TestCase):
         self.assertFalse(first.deduplicated)
         self.assertTrue(second.deduplicated)
         self.assertEqual(first.storage_key, second.storage_key)
-        self.assertEqual(len(list(self.root.rglob("*.csv"))), 1)
+        self.assertEqual(len(list(self.root.rglob(".blobs/*"))), 1)
 
     def test_same_content_in_different_workspace_creates_separate_blob(self) -> None:
         first = self.put_stream(b"same-content", workspace_id="workspace-1")
         second = self.put_stream(b"same-content", workspace_id="workspace-2")
 
         self.assertNotEqual(first.storage_key, second.storage_key)
-        self.assertEqual(len(list(self.root.rglob("*.csv"))), 2)
+        self.assertEqual(len(list(self.root.rglob(".blobs/*"))), 2)
 
+    def test_delete_then_reupload_same_content_creates_new_blob(self) -> None:
+        first = self.put_stream(b"same-content")
+
+        self.storage.delete(first.storage_key)
+        second = self.put_stream(b"same-content", version_id="version-2")
+
+        self.assertFalse(second.deduplicated)
+        self.assertEqual(first.storage_key, second.storage_key)
+        with self.storage.open_read(second.storage_key) as handle:
+            self.assertEqual(handle.read(), b"same-content")
+
+    def test_cleans_temp_file_if_commit_fails(self) -> None:
+        with patch.object(self.storage, "_commit_blob", side_effect=OSError("commit failed")):
+            with self.assertRaises(OSError):
+                self.put_stream(b"payload")
+
+        self.assertEqual(list(self.root.rglob("*.part")), [])
+        self.assertEqual(list(self.root.rglob(".blobs/*")), [])
