@@ -5,6 +5,7 @@ from collections.abc import Iterable
 
 from pydantic import ValidationError
 
+from application.datasets.jobs import DatasetProfileJobResult
 from application.datasets.models import (
     AnalysisDatasetSelection,
     Dataset,
@@ -99,6 +100,11 @@ class RecordingDispatcher:
         self.version_ids.append(version_id)
 
 
+class FailingDispatcher:
+    def dispatch_profile(self, version_id: str) -> None:
+        raise RuntimeError(f"dispatcher failed for {version_id}")
+
+
 class DatasetServiceTests(unittest.TestCase):
     def setUp(self) -> None:
         self.repository = InMemoryDatasetRepository()
@@ -181,6 +187,52 @@ class DatasetServiceTests(unittest.TestCase):
         self.assertIsNotNone(ready.profile)
         self.assertEqual(ready.profile.columns, ["date", "product_code", "sales"])
 
+    def test_complete_profile_rejects_ready_without_profile(self) -> None:
+        workspace = self.service.ensure_default_workspace()
+        _, version = self.service.register_upload_receiving(
+            workspace.id,
+            original_filename="sales.csv",
+        )
+        self.service.complete_upload(
+            version.id,
+            storage_key="blob-1",
+            size_bytes=10,
+            checksum_sha256="sum-1",
+            file_format="csv",
+        )
+        self.service.start_profiling(version.id)
+
+        with self.assertRaises(InvalidDatasetStateError):
+            self.service.complete_profile(
+                version.id,
+                profile=None,
+                issues=[],
+                success=True,
+            )
+
+    def test_complete_profile_rejects_ready_with_error_issue(self) -> None:
+        workspace = self.service.ensure_default_workspace()
+        _, version = self.service.register_upload_receiving(
+            workspace.id,
+            original_filename="sales.csv",
+        )
+        self.service.complete_upload(
+            version.id,
+            storage_key="blob-1",
+            size_bytes=10,
+            checksum_sha256="sum-1",
+            file_format="csv",
+        )
+        self.service.start_profiling(version.id)
+
+        with self.assertRaises(InvalidDatasetStateError):
+            self.service.complete_profile(
+                version.id,
+                profile=DatasetProfile(format="csv", row_count=10, columns=["date"]),
+                issues=[DatasetIssue(code="bad_schema", message="schema mismatch", severity="error")],
+                success=True,
+            )
+
     def test_attach_versions_deduplicates_and_preserves_order(self) -> None:
         workspace = self.service.ensure_default_workspace()
         _, first = self.service.register_upload_receiving(
@@ -239,7 +291,7 @@ class DatasetServiceTests(unittest.TestCase):
         with self.assertRaises(InvalidDatasetStateError):
             self.service.attach_versions_to_analysis("analysis-1", [version.id])
 
-    def test_soft_delete_rejects_referenced_version(self) -> None:
+    def test_soft_delete_allows_referenced_version_and_preserves_existing_analysis(self) -> None:
         workspace = self.service.ensure_default_workspace()
         _, version = self.service.register_upload_receiving(
             workspace.id,
@@ -261,5 +313,44 @@ class DatasetServiceTests(unittest.TestCase):
         )
         self.service.attach_versions_to_analysis("analysis-1", [version.id])
 
+        deleted = self.service.soft_delete_version(version.id)
+        self.assertEqual(deleted.status, "deleted")
+        self.assertIsNotNone(deleted.deleted_at)
+        self.assertEqual(
+            [item.dataset_version_id for item in self.repository.list_analysis_dataset_selections("analysis-1")],
+            [version.id],
+        )
+
         with self.assertRaises(InvalidDatasetStateError):
-            self.service.soft_delete_version(version.id)
+            self.service.attach_versions_to_analysis("analysis-2", [version.id])
+
+    def test_start_profiling_rolls_back_if_dispatch_fails(self) -> None:
+        self.service = DatasetService(self.repository, FailingDispatcher())
+        workspace = self.service.ensure_default_workspace()
+        _, version = self.service.register_upload_receiving(
+            workspace.id,
+            original_filename="sales.csv",
+        )
+        self.service.complete_upload(
+            version.id,
+            storage_key="blob-1",
+            size_bytes=10,
+            checksum_sha256="sum-1",
+            file_format="csv",
+        )
+
+        with self.assertRaises(RuntimeError):
+            self.service.start_profiling(version.id)
+
+        stored = self.repository.get_dataset_version(version.id)
+        assert stored is not None
+        self.assertEqual(stored.status, "uploaded")
+
+    def test_job_result_rejects_inconsistent_success(self) -> None:
+        with self.assertRaises(ValidationError):
+            DatasetProfileJobResult(
+                version_id="dsv_1",
+                profile=None,
+                issues=[],
+                success=True,
+            )

@@ -12,11 +12,18 @@ from api import main as api_main
 class ApiTransitionTests(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()
+        self.original_db = api_main.ANALYSES_DB
+        self.original_initialized = api_main._db_initialized
         api_main.ANALYSES_DB = os.path.join(self.tmpdir.name, "analyses.sqlite")
         api_main._db_initialized = False
+        api_main._rate_log.clear()
         self.client = TestClient(api_main.app)
 
     def tearDown(self):
+        self.client.close()
+        api_main.ANALYSES_DB = self.original_db
+        api_main._db_initialized = self.original_initialized
+        api_main._rate_log.clear()
         self.tmpdir.cleanup()
 
     def _plan(self, question: str) -> AnalysisPlan:

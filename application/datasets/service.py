@@ -145,7 +145,12 @@ class DatasetService:
         version = self._require_version(version_id)
         self._transition(version, "profiling")
         saved = self._repository.save_dataset_version(version)
-        self._job_dispatcher.dispatch_profile(version_id)
+        try:
+            self._job_dispatcher.dispatch_profile(version_id)
+        except Exception:
+            saved.status = "uploaded"
+            self._repository.save_dataset_version(saved)
+            raise
         return saved
 
     def complete_profile(
@@ -157,17 +162,22 @@ class DatasetService:
         success: bool,
     ) -> DatasetVersion:
         version = self._require_version(version_id)
-        target_status: DatasetVersionStatus = "ready" if success else "invalid"
+        issues_list = list(issues or [])
+        is_ready = self._is_ready_profile(profile, issues_list)
+        if success != is_ready:
+            raise InvalidDatasetStateError(
+                "Profile result is inconsistent: ready requires profile and no error issues"
+            )
+
+        target_status: DatasetVersionStatus = "ready" if is_ready else "invalid"
         self._transition(version, target_status)
         version.profile = profile
-        version.issues = list(issues or [])
+        version.issues = issues_list
         saved = self._repository.save_dataset_version(version)
         return saved
 
     def soft_delete_version(self, version_id: str) -> DatasetVersion:
         version = self._require_version(version_id)
-        if self._repository.is_version_referenced(version_id):
-            raise InvalidDatasetStateError("Referenced dataset version cannot be deleted")
         self._transition(version, "deleted")
         version.deleted_at = self._utcnow()
         return self._repository.save_dataset_version(version)
@@ -254,3 +264,10 @@ class DatasetService:
     @staticmethod
     def _utcnow() -> datetime:
         return datetime.now(UTC)
+
+    @staticmethod
+    def _is_ready_profile(
+        profile: DatasetProfile | None,
+        issues: Sequence[DatasetIssue],
+    ) -> bool:
+        return profile is not None and not any(issue.severity == "error" for issue in issues)
