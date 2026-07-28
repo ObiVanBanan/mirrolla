@@ -201,9 +201,10 @@ def build_datasets_router(*, verify_api_key, check_rate_limit):
                 checksum_sha256=stored.checksum_sha256,
                 file_format=suffix,
             )
+            profiling = service.start_profiling(uploaded.id)
             return UploadDatasetResponse(
                 dataset=_dataset_response(dataset, repository.list_dataset_versions(dataset.id)),
-                version=_version_response(uploaded),
+                version=_version_response(profiling),
                 deduplicated=stored.deduplicated,
             )
         except Exception as exc:

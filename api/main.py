@@ -34,6 +34,7 @@ from agent.router import route_sync
 from agent.schemas import AnalysisPlan
 from api.datasets import build_datasets_router
 from application.datasets.service import DatasetService
+from infrastructure.jobs.in_process_dispatcher import InProcessDatasetJobDispatcher
 from infrastructure.persistence.sqlite_datasets import SqliteDatasetRepository
 from infrastructure.storage.local_files import LocalRawFileStorage
 
@@ -101,13 +102,6 @@ def verify_api_key(x_api_key: str = Header(default="")):
         raise HTTPException(status_code=401, detail="Invalid API key")
 
 
-class InProcessDatasetJobDispatcher:
-    """F4 placeholder dispatcher. Real profiling worker arrives in F5."""
-
-    def dispatch_profile(self, version_id: str) -> None:
-        return None
-
-
 def _validate_analysis_id(analysis_id: str) -> None:
     if not re.match(r"^[a-zA-Z0-9\-]{1,64}$", analysis_id):
         raise HTTPException(status_code=400, detail="Invalid analysis_id")
@@ -136,16 +130,22 @@ class AnalysisResponse(BaseModel):
 async def lifespan(app: FastAPI):
     conn = _get_analyses_conn()
     conn.close()
-    app.state.dataset_job_dispatcher = InProcessDatasetJobDispatcher()
     app.state.dataset_repository_factory = lambda: SqliteDatasetRepository(DATASETS_DB)
     app.state.raw_file_storage_factory = lambda: LocalRawFileStorage(UPLOADS_ROOT)
+    app.state.dataset_job_dispatcher = InProcessDatasetJobDispatcher(
+        repository_factory=app.state.dataset_repository_factory,
+        storage_factory=app.state.raw_file_storage_factory,
+    )
     app.state.dataset_service_factory = lambda: DatasetService(
         app.state.dataset_repository_factory(),
         app.state.dataset_job_dispatcher,
     )
     app.state.max_upload_bytes = MAX_UPLOAD_BYTES
     app.state.dataset_service_factory().ensure_default_workspace()
-    yield
+    try:
+        yield
+    finally:
+        app.state.dataset_job_dispatcher.shutdown()
 
 
 app = FastAPI(

@@ -1,5 +1,6 @@
 import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -66,9 +67,12 @@ class DatasetApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertEqual(payload["dataset"]["display_name"], "Sales")
-        self.assertEqual(payload["version"]["status"], "uploaded")
+        self.assertEqual(payload["version"]["status"], "profiling")
         self.assertEqual(payload["version"]["size_bytes"], 4)
         self.assertNotIn("storage_key", payload["version"])
+
+        ready = self._wait_for_version_status(payload["version"]["id"], {"ready"})
+        self.assertEqual(ready["status"], "ready")
 
     def test_list_datasets_after_successful_upload(self):
         upload = self.client.post(
@@ -78,6 +82,7 @@ class DatasetApiTests(unittest.TestCase):
         )
 
         self.assertEqual(upload.status_code, 200)
+        self._wait_for_version_status(upload.json()["version"]["id"], {"ready"})
 
         response = self.client.get("/api/v1/workspaces/default/datasets")
 
@@ -86,7 +91,7 @@ class DatasetApiTests(unittest.TestCase):
         self.assertEqual(len(payload["datasets"]), 1)
         self.assertEqual(payload["datasets"][0]["display_name"], "Sales")
         self.assertEqual(len(payload["datasets"][0]["versions"]), 1)
-        self.assertEqual(payload["datasets"][0]["versions"][0]["status"], "uploaded")
+        self.assertEqual(payload["datasets"][0]["versions"][0]["status"], "ready")
 
     def test_upload_rejects_unsupported_type(self):
         response = self.client.post(
@@ -132,6 +137,7 @@ class DatasetApiTests(unittest.TestCase):
         )
         self.assertEqual(upload.status_code, 200)
         version_id = upload.json()["version"]["id"]
+        self._wait_for_version_status(version_id, {"ready"})
         repository = self.client.app.state.dataset_repository_factory()
         version = repository.get_dataset_version(version_id)
         self.assertIsNotNone(version)
@@ -191,3 +197,14 @@ class DatasetApiTests(unittest.TestCase):
         payload = response.json()
         self.assertEqual(payload["version"]["original_filename"], "secret.csv")
         self.assertNotIn("\\", payload["version"]["original_filename"])
+
+    def _wait_for_version_status(self, version_id: str, expected_statuses: set[str], timeout: float = 3.0):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            response = self.client.get(f"/api/v1/dataset-versions/{version_id}")
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            if payload["status"] in expected_statuses:
+                return payload
+            time.sleep(0.05)
+        self.fail(f"Version {version_id} did not reach {expected_statuses} before timeout")
