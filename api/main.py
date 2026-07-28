@@ -29,8 +29,13 @@ load_dotenv()
 
 from agent.planner import plan as generate_plan
 from agent.router import route_sync
+from agent.runtime.execution_manifest import ExecutionDatasetReference, ExecutionManifest
 from agent.schemas import AnalysisPlan
 from api.datasets import build_datasets_router
+from application.datasets.execution import (
+    DatasetExecutionError,
+    DatasetExecutionResolver,
+)
 from application.datasets.models import Dataset, DatasetVersion
 from application.datasets.service import (
     DatasetNotFoundError,
@@ -39,6 +44,10 @@ from application.datasets.service import (
     DatasetVersionNotFoundError,
     InvalidDatasetStateError,
     WorkspaceNotFoundError,
+)
+from infrastructure.storage.execution_files import (
+    DatasetChecksumMismatchError,
+    materialize_execution_files,
 )
 from infrastructure.jobs.in_process_dispatcher import InProcessDatasetJobDispatcher
 from infrastructure.persistence.sqlite_datasets import SqliteDatasetRepository
@@ -252,8 +261,22 @@ def create_analysis(
 
     analysis_id = str(uuid.uuid4())
     routing = route_sync(req.question)
-    plan = generate_plan(req.question, routing=routing)
     dataset_service = app.state.dataset_service_factory()
+    resolver = DatasetExecutionResolver(app.state.dataset_repository_factory())
+    try:
+        dataset_context = resolver.resolve_version_ids(req.dataset_version_ids)
+    except Exception as exc:
+        if isinstance(exc, DatasetExecutionError):
+            if exc.code == "dataset_selection_missing":
+                raise HTTPException(status_code=404, detail=exc.detail) from exc
+            raise HTTPException(status_code=409, detail=exc.detail) from exc
+        raise
+
+    plan = generate_plan(
+        req.question,
+        routing=routing,
+        dataset_context=dataset_context,
+    )
 
     conn = _get_analyses_conn()
     try:
@@ -474,6 +497,55 @@ def health():
     return {"status": "ok", "service": "mirrolla-ai"}
 
 
+def _build_execution_manifest(
+    analysis_id: str,
+    question: str,
+    skill_id: str,
+    resolved_inputs,
+    materialized_files,
+) -> ExecutionManifest:
+    files_by_version_id = {
+        item.dataset_version_id: item
+        for item in materialized_files.files
+    }
+    return ExecutionManifest(
+        analysis_id=analysis_id,
+        question=question,
+        skill_id=skill_id,
+        datasets=[
+            ExecutionDatasetReference(
+                position=item.position,
+                dataset_id=item.dataset_id,
+                dataset_version_id=item.dataset_version_id,
+                display_name=item.display_name,
+                original_filename=item.original_filename,
+                sandbox_filename=files_by_version_id[item.dataset_version_id].sandbox_filename,
+                format=item.format,
+                checksum_sha256=item.checksum_sha256,
+                profile=item.profile,
+            )
+            for item in resolved_inputs
+        ],
+    )
+
+
+def _serialize_execution_error(exc: Exception) -> dict:
+    if isinstance(exc, DatasetExecutionError):
+        return {
+            "code": exc.code,
+            "message": exc.detail,
+        }
+    if isinstance(exc, DatasetChecksumMismatchError):
+        return {
+            "code": exc.code,
+            "message": exc.detail,
+        }
+    return {
+        "code": "analysis_execution_failed",
+        "message": "Analysis execution failed unexpectedly",
+    }
+
+
 def _execute_analysis_background(analysis_id: str) -> None:
     conn = _get_analyses_conn()
     row = conn.execute("SELECT * FROM analyses WHERE id = ?", (analysis_id,)).fetchone()
@@ -485,8 +557,27 @@ def _execute_analysis_background(analysis_id: str) -> None:
         plan_dict = json.loads(row["plan_json"])
         plan = AnalysisPlan(**plan_dict)
         from agent.executor import execute as execute_plan
-
-        result = execute_plan(plan)
+        repository = app.state.dataset_repository_factory()
+        storage = app.state.raw_file_storage_factory()
+        resolver = DatasetExecutionResolver(repository)
+        resolved_inputs = resolver.resolve_for_analysis(analysis_id)
+        if resolved_inputs:
+            with materialize_execution_files(resolved_inputs, storage) as bundle:
+                manifest = _build_execution_manifest(
+                    analysis_id,
+                    row["question"],
+                    row["skill"],
+                    resolved_inputs,
+                    bundle,
+                )
+                result = execute_plan(
+                    plan,
+                    analysis_id=analysis_id,
+                    execution_manifest=manifest,
+                    file_paths=[item.local_path for item in bundle.files],
+                )
+        else:
+            result = execute_plan(plan, analysis_id=analysis_id)
         conn.execute(
             "UPDATE analyses SET status = 'done', result_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
             (json.dumps(result.model_dump(), ensure_ascii=False, default=str), analysis_id),
@@ -495,7 +586,7 @@ def _execute_analysis_background(analysis_id: str) -> None:
     except Exception as exc:
         conn.execute(
             "UPDATE analyses SET status = 'error', result_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-            (json.dumps({"error": str(exc)}, ensure_ascii=False), analysis_id),
+            (json.dumps({"error": _serialize_execution_error(exc)}, ensure_ascii=False), analysis_id),
         )
         conn.commit()
     finally:

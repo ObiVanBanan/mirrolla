@@ -18,6 +18,8 @@ import json
 from dotenv import load_dotenv
 from pydantic import ValidationError
 
+from application.datasets.execution import ResolvedDatasetInput
+
 from agent.schemas import (
     SkillType,
     RoutingResult,
@@ -116,9 +118,52 @@ def _validate_product_codes(codes: list[str]) -> list[str]:
         warnings.append(f"Ошибка валидации кодов: {e}")
 
     return warnings
+def _build_dataset_context_block(dataset_context: list[ResolvedDatasetInput] | None) -> str:
+    if not dataset_context:
+        return ""
+
+    lines = [
+        "## Attached dataset profiles",
+        "These are the factual datasets for the current analysis.",
+        "Do not assume files, sheets, or columns that are not present below.",
+        "Do not use raw dataset rows beyond these profile summaries.",
+    ]
+    for item in dataset_context:
+        lines.append(
+            f"### dataset_version_id={item.dataset_version_id} | display_name={item.display_name} | format={item.format}"
+        )
+        for sheet in item.profile.sheets:
+            lines.append(
+                f"- sheet: {sheet.name} | row_count={sheet.row_count} | sampled={sheet.sampled}"
+            )
+            for warning in sheet.warnings:
+                lines.append(f"  - warning: {warning}")
+            for column in sheet.columns:
+                parts = [
+                    f"  - column: {column.name}",
+                    f"type={column.inferred_type}",
+                    f"null_ratio={column.null_ratio:.3f}",
+                ]
+                if column.unique_count is not None:
+                    parts.append(f"unique={column.unique_count}")
+                if column.min_value is not None:
+                    parts.append(f"min={column.min_value}")
+                if column.max_value is not None:
+                    parts.append(f"max={column.max_value}")
+                if column.examples:
+                    parts.append(f"examples={', '.join(column.examples)}")
+                lines.append(" | ".join(parts))
+        for warning in item.profile.warnings:
+            lines.append(f"- profile_warning: {warning}")
+
+    return "\n".join(lines)
 
 
-def _build_messages(question: str, routing: RoutingResult) -> list[dict]:
+def _build_messages(
+    question: str,
+    routing: RoutingResult,
+    dataset_context: list[ResolvedDatasetInput] | None = None,
+) -> list[dict]:
     """Собрать messages для LLM: system + user."""
     skill_md = _load_skill_md(routing.skill)
 
@@ -137,6 +182,9 @@ def _build_messages(question: str, routing: RoutingResult) -> list[dict]:
 - reviews_ozon — Ozon отзывы (внутри sales)
 - categories — 1С productType (категория товара)
 """
+    dataset_block = _build_dataset_context_block(dataset_context)
+    if dataset_block:
+        system = f"{system}\n\n{dataset_block}"
 
     user_parts = [
         f"Вопрос менеджера: {question}",
@@ -156,7 +204,11 @@ def _build_messages(question: str, routing: RoutingResult) -> list[dict]:
     ]
 
 
-def plan(question: str, routing: RoutingResult | None = None) -> AnalysisPlan:
+def plan(
+    question: str,
+    routing: RoutingResult | None = None,
+    dataset_context: list[ResolvedDatasetInput] | None = None,
+) -> AnalysisPlan:
     """
     Сформировать план анализа.
 
@@ -194,7 +246,7 @@ def plan(question: str, routing: RoutingResult | None = None) -> AnalysisPlan:
             temperature=0,
         )
         structured_llm = llm.with_structured_output(AnalysisPlan)
-        messages = _build_messages(question, routing)
+        messages = _build_messages(question, routing, dataset_context)
         result = structured_llm.invoke(messages)
 
         # Добавляем warnings в limitations

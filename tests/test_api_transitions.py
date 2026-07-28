@@ -7,9 +7,15 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from agent.schemas import AnalysisPlan, PeriodSpec, SkillType
+from agent.schemas import AnalysisPlan, ExecutionResult, PeriodSpec, SkillType
 from api import main as api_main
-from application.datasets.models import Dataset, DatasetVersion
+from application.datasets.models import (
+    Dataset,
+    DatasetColumnProfile,
+    DatasetProfile,
+    DatasetSheetProfile,
+    DatasetVersion,
+)
 
 
 class ApiTransitionTests(unittest.TestCase):
@@ -48,6 +54,16 @@ class ApiTransitionTests(unittest.TestCase):
             limitations=[],
         )
 
+    def _wait_until_ready(self, version_id: str) -> None:
+        deadline = time.time() + 3.0
+        while time.time() < deadline:
+            current = self.client.get(f"/api/v1/dataset-versions/{version_id}")
+            self.assertEqual(current.status_code, 200)
+            if current.json()["status"] == "ready":
+                return
+            time.sleep(0.05)
+        self.fail(f"Dataset version {version_id} did not become ready")
+
     @patch("api.main.generate_plan")
     @patch("api.main.route_sync")
     def test_create_accepts_legacy_question_only_payload(self, route_sync, generate_plan):
@@ -56,7 +72,7 @@ class ApiTransitionTests(unittest.TestCase):
             "product_codes": [],
             "period_days": 14,
         })()
-        generate_plan.side_effect = lambda question, routing=None: self._plan(question)
+        generate_plan.side_effect = lambda question, routing=None, dataset_context=None: self._plan(question)
 
         created = self.client.post(
             "/api/v1/analyses",
@@ -77,7 +93,7 @@ class ApiTransitionTests(unittest.TestCase):
             "product_codes": [],
             "period_days": 14,
         })()
-        generate_plan.side_effect = lambda question, routing=None: self._plan(question)
+        generate_plan.side_effect = lambda question, routing=None, dataset_context=None: self._plan(question)
 
         created = self.client.post("/api/v1/analyses", json={"question": "Почему упали продажи?"})
         self.assertEqual(created.status_code, 200)
@@ -103,7 +119,7 @@ class ApiTransitionTests(unittest.TestCase):
             "product_codes": [],
             "period_days": 14,
         })()
-        generate_plan.side_effect = lambda question, routing=None: self._plan(question)
+        generate_plan.side_effect = lambda question, routing=None, dataset_context=None: self._plan(question)
 
         upload = self.client.post(
             "/api/v1/workspaces/default/datasets",
@@ -113,15 +129,7 @@ class ApiTransitionTests(unittest.TestCase):
         self.assertEqual(upload.status_code, 200)
         version_id = upload.json()["version"]["id"]
 
-        deadline = time.time() + 3.0
-        while time.time() < deadline:
-            current = self.client.get(f"/api/v1/dataset-versions/{version_id}")
-            self.assertEqual(current.status_code, 200)
-            if current.json()["status"] == "ready":
-                break
-            time.sleep(0.05)
-        else:
-            self.fail("Dataset version did not become ready")
+        self._wait_until_ready(version_id)
 
         created = self.client.post(
             "/api/v1/analyses",
@@ -155,7 +163,7 @@ class ApiTransitionTests(unittest.TestCase):
             "product_codes": [],
             "period_days": 14,
         })()
-        generate_plan.side_effect = lambda question, routing=None: self._plan(question)
+        generate_plan.side_effect = lambda question, routing=None, dataset_context=None: self._plan(question)
 
         repository = self.client.app.state.dataset_repository_factory()
         now = datetime.now(UTC)
@@ -200,7 +208,7 @@ class ApiTransitionTests(unittest.TestCase):
             "product_codes": [],
             "period_days": 14,
         })()
-        generate_plan.side_effect = lambda question, routing=None: self._plan(question)
+        generate_plan.side_effect = lambda question, routing=None, dataset_context=None: self._plan(question)
 
         repository = self.client.app.state.dataset_repository_factory()
         now = datetime.now(UTC)
@@ -232,6 +240,24 @@ class ApiTransitionTests(unittest.TestCase):
                 size_bytes=24,
                 checksum_sha256="111",
                 status="ready",
+                profile=DatasetProfile(
+                    format="csv",
+                    sheets=[
+                        DatasetSheetProfile(
+                            name="__root__",
+                            row_count=1,
+                            columns=[
+                                DatasetColumnProfile(
+                                    name="date",
+                                    inferred_type="string",
+                                    null_ratio=0.0,
+                                    unique_count=1,
+                                    examples=["2026-07-01"],
+                                )
+                            ],
+                        )
+                    ],
+                ),
                 created_at=now,
             )
         )
@@ -245,6 +271,24 @@ class ApiTransitionTests(unittest.TestCase):
                 size_bytes=24,
                 checksum_sha256="222",
                 status="ready",
+                profile=DatasetProfile(
+                    format="csv",
+                    sheets=[
+                        DatasetSheetProfile(
+                            name="__root__",
+                            row_count=1,
+                            columns=[
+                                DatasetColumnProfile(
+                                    name="sku",
+                                    inferred_type="string",
+                                    null_ratio=0.0,
+                                    unique_count=1,
+                                    examples=["A-1"],
+                                )
+                            ],
+                        )
+                    ],
+                ),
                 created_at=now,
             )
         )
@@ -280,7 +324,7 @@ class ApiTransitionTests(unittest.TestCase):
             "product_codes": [],
             "period_days": 14,
         })()
-        generate_plan.side_effect = lambda question, routing=None: self._plan(question)
+        generate_plan.side_effect = lambda question, routing=None, dataset_context=None: self._plan(question)
 
         first_upload = self.client.post(
             "/api/v1/workspaces/default/datasets",
@@ -291,15 +335,7 @@ class ApiTransitionTests(unittest.TestCase):
         dataset_id = first_upload.json()["dataset"]["id"]
         first_version_id = first_upload.json()["version"]["id"]
 
-        deadline = time.time() + 3.0
-        while time.time() < deadline:
-            current = self.client.get(f"/api/v1/dataset-versions/{first_version_id}")
-            self.assertEqual(current.status_code, 200)
-            if current.json()["status"] == "ready":
-                break
-            time.sleep(0.05)
-        else:
-            self.fail("First dataset version did not become ready")
+        self._wait_until_ready(first_version_id)
 
         created = self.client.post(
             "/api/v1/analyses",
@@ -319,15 +355,7 @@ class ApiTransitionTests(unittest.TestCase):
         self.assertEqual(second_upload.status_code, 200)
         second_version_id = second_upload.json()["version"]["id"]
 
-        deadline = time.time() + 3.0
-        while time.time() < deadline:
-            current = self.client.get(f"/api/v1/dataset-versions/{second_version_id}")
-            self.assertEqual(current.status_code, 200)
-            if current.json()["status"] == "ready":
-                break
-            time.sleep(0.05)
-        else:
-            self.fail("Second dataset version did not become ready")
+        self._wait_until_ready(second_version_id)
 
         fetched = self.client.get(f"/api/v1/analyses/{analysis_id}")
         self.assertEqual(fetched.status_code, 200)
@@ -340,6 +368,124 @@ class ApiTransitionTests(unittest.TestCase):
             fetched.json()["dataset_attachments"][0]["original_filename"],
             "sales-v1.csv",
         )
+
+    @patch("api.main.generate_plan")
+    @patch("api.main.route_sync")
+    def test_background_execution_uses_only_selected_versions_in_position_order(self, route_sync, generate_plan):
+        route_sync.return_value = type("Routing", (), {
+            "skill": SkillType.SALES_DECLINE,
+            "product_codes": [],
+            "period_days": 14,
+        })()
+        generate_plan.side_effect = lambda question, routing=None, dataset_context=None: self._plan(question)
+
+        first_upload = self.client.post(
+            "/api/v1/workspaces/default/datasets",
+            files={"file": ("sales.csv", b"date,sales\n2026-07-01,10\n", "text/csv")},
+            data={"display_name": "Sales"},
+        )
+        second_upload = self.client.post(
+            "/api/v1/workspaces/default/datasets",
+            files={"file": ("stocks.csv", b"sku,stock\nA-1,5\n", "text/csv")},
+            data={"display_name": "Stocks"},
+        )
+        third_upload = self.client.post(
+            "/api/v1/workspaces/default/datasets",
+            files={"file": ("ignored.csv", b"id,value\n1,99\n", "text/csv")},
+            data={"display_name": "Ignored"},
+        )
+        self.assertEqual(first_upload.status_code, 200)
+        self.assertEqual(second_upload.status_code, 200)
+        self.assertEqual(third_upload.status_code, 200)
+        first_version_id = first_upload.json()["version"]["id"]
+        second_version_id = second_upload.json()["version"]["id"]
+        ignored_version_id = third_upload.json()["version"]["id"]
+        self._wait_until_ready(first_version_id)
+        self._wait_until_ready(second_version_id)
+        self._wait_until_ready(ignored_version_id)
+
+        created = self.client.post(
+            "/api/v1/analyses",
+            json={
+                "question": "Почему упали продажи?",
+                "dataset_version_ids": [second_version_id, first_version_id],
+            },
+        )
+        self.assertEqual(created.status_code, 200)
+        analysis_id = created.json()["id"]
+
+        captured = {}
+
+        def fake_execute(plan, *, analysis_id=None, execution_manifest=None, file_paths=None, max_retries=2):
+            captured["analysis_id"] = analysis_id
+            captured["manifest"] = execution_manifest
+            captured["file_paths"] = list(file_paths or [])
+            return ExecutionResult(
+                question=plan.question,
+                skill=plan.skill,
+                answer_status="answered",
+                findings=[],
+                hypothesis_results=[],
+                charts=[],
+                summary="ok",
+                limitations=[],
+                errors=[],
+            )
+
+        with patch("agent.executor.execute", side_effect=fake_execute):
+            api_main._execute_analysis_background(analysis_id)
+
+        self.assertEqual(captured["analysis_id"], analysis_id)
+        self.assertEqual(
+            [item.dataset_version_id for item in captured["manifest"].datasets],
+            [second_version_id, first_version_id],
+        )
+        self.assertEqual(len(captured["file_paths"]), 2)
+        self.assertTrue(captured["file_paths"][0].endswith("dataset_001.csv"))
+        self.assertTrue(captured["file_paths"][1].endswith("dataset_002.csv"))
+        self.assertNotIn(ignored_version_id, [item.dataset_version_id for item in captured["manifest"].datasets])
+
+    @patch("api.main.generate_plan")
+    @patch("api.main.route_sync")
+    def test_missing_blob_stops_execution_before_executor(self, route_sync, generate_plan):
+        route_sync.return_value = type("Routing", (), {
+            "skill": SkillType.SALES_DECLINE,
+            "product_codes": [],
+            "period_days": 14,
+        })()
+        generate_plan.side_effect = lambda question, routing=None, dataset_context=None: self._plan(question)
+
+        upload = self.client.post(
+            "/api/v1/workspaces/default/datasets",
+            files={"file": ("sales.csv", b"date,sales\n2026-07-01,10\n", "text/csv")},
+            data={"display_name": "Sales"},
+        )
+        self.assertEqual(upload.status_code, 200)
+        version_id = upload.json()["version"]["id"]
+        self._wait_until_ready(version_id)
+        created = self.client.post(
+            "/api/v1/analyses",
+            json={
+                "question": "Почему упали продажи?",
+                "dataset_version_ids": [version_id],
+            },
+        )
+        self.assertEqual(created.status_code, 200)
+        analysis_id = created.json()["id"]
+
+        repository = self.client.app.state.dataset_repository_factory()
+        storage = self.client.app.state.raw_file_storage_factory()
+        version = repository.get_dataset_version(version_id)
+        assert version is not None
+        storage.delete(version.storage_key)
+
+        with patch("agent.executor.execute", side_effect=AssertionError("executor must not run")):
+            api_main._execute_analysis_background(analysis_id)
+
+        fetched = self.client.get(f"/api/v1/analyses/{analysis_id}")
+        self.assertEqual(fetched.status_code, 200)
+        self.assertEqual(fetched.json()["status"], "error")
+        self.assertEqual(fetched.json()["result"]["error"]["code"], "dataset_blob_missing")
 
 
 if __name__ == "__main__":

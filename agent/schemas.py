@@ -1,16 +1,13 @@
 """
-agent/schemas.py — Pydantic-модели для агента.
-
-Определяют контракт между Router → Planner → Executor.
+Pydantic models shared across router, planner, and executor.
 """
 
 from enum import Enum
+
 from pydantic import BaseModel, Field
 
 
 class SkillType(str, Enum):
-    """4 аналитических skill-класса."""
-
     SALES_DECLINE = "sales-decline-analysis"
     INVENTORY = "inventory-planning"
     PORTFOLIO_GROWTH = "portfolio-growth"
@@ -18,164 +15,154 @@ class SkillType(str, Enum):
 
 
 class Question(BaseModel):
-    """Вход: вопрос менеджера."""
-
-    text: str = Field(..., description="Вопрос менеджера на русском языке")
+    text: str = Field(..., description="Manager question in Russian")
 
 
 class RoutingResult(BaseModel):
-    """Выход Router: какой skill нужен + параметры."""
-
-    skill: SkillType = Field(
-        ...,
-        description="Аналитический skill для ответа на вопрос",
-    )
+    skill: SkillType = Field(..., description="Selected analytical skill")
     product_codes: list[str] = Field(
         default_factory=list,
-        description="Коды товаров из вопроса (ЦБ-XXXXXXXX или ФР-XXXXXXXX). Пустой список, если вопрос не про конкретный товар.",
+        description="Product codes found in the question",
     )
     period_days: int = Field(
         default=14,
         ge=1,
         le=365,
-        description="Период анализа в днях. По умолчанию 14.",
+        description="Analysis period in days",
     )
 
 
 class PeriodSpec(BaseModel):
-    """Спецификация периода анализа."""
-
     current_days: int = Field(
         ...,
         ge=1,
         le=365,
-        description="Длина текущего периода в днях",
+        description="Length of the current analysis period in days",
     )
     comparison: str = Field(
         default="previous_equal_period",
-        description="Метод сравнения: previous_equal_period, year_over_year, ...",
+        description="Comparison strategy",
     )
 
 
 class Hypothesis(BaseModel):
-    """Одна гипотеза анализа."""
-
-    id: str = Field(..., description="Идентификатор: H1, H2, H3, ...")
-    title: str = Field(..., description="Краткое название гипотезы")
+    id: str = Field(..., description="Hypothesis identifier: H1, H2, ...")
+    title: str = Field(..., description="Short hypothesis title")
     datasets: list[str] = Field(
-        ..., description="Датасеты для проверки: sales, stocks, reviews_wb, reviews_ozon, categories"
+        ...,
+        description="Datasets required to validate the hypothesis",
     )
-    method: str = Field(..., description="Метод проверки гипотезы (что именно сделать)")
+    method: str = Field(..., description="Validation method")
     helpers: list[str] = Field(
         default_factory=list,
-        description="Имена конкретных функций из helpers/ для этой гипотезы. Executor будет читать исходник только этих функций и передавать в LLM prompt. Пример: ['compare_periods', 'stockout_days']",
+        description="Helper function names from helpers/",
     )
 
 
 class AnalysisPlan(BaseModel):
-    """Полный план анализа — выход Planner."""
-
-    skill: SkillType = Field(..., description="Аналитический skill")
-    question: str = Field(..., description="Исходный вопрос менеджера")
+    skill: SkillType = Field(..., description="Analytical skill")
+    question: str = Field(..., description="Original manager question")
     product_codes: list[str] = Field(
         default_factory=list,
-        description="Коды товаров для анализа",
+        description="Product codes for the analysis",
     )
-    period: PeriodSpec = Field(..., description="Период анализа")
+    period: PeriodSpec = Field(..., description="Analysis period")
     hypotheses: list[Hypothesis] = Field(
         ...,
-        description="Гипотезы для проверки (3-5 штук)",
+        description="Hypotheses to validate",
     )
     limitations: list[str] = Field(
         default_factory=list,
-        description="Ограничения: чего нет в данных, что нельзя проверить",
+        description="Known data limitations",
     )
 
 
 class HypothesisResult(BaseModel):
-    """Результат проверки одной гипотезы."""
-
-    hypothesis_id: str = Field(..., description="ID гипотезы: H1, H2, ...")
-    title: str = Field(..., description="Название гипотезы")
+    hypothesis_id: str = Field(..., description="Hypothesis identifier")
+    title: str = Field(..., description="Hypothesis title")
     confirmed: bool | None = Field(
         None,
-        description="True — подтверждена, False — опровергнута, None — недостаточно данных",
+        description="True if confirmed, False if rejected, None if inconclusive",
     )
-    detail: str = Field(..., description="Что выяснилось по гипотезе")
+    detail: str = Field(..., description="Validation details")
     data: dict | None = Field(
         None,
-        description="Численные результаты (метрики, цифры)",
+        description="Structured metrics used by the validation",
     )
 
 
 class Finding(BaseModel):
-    """Конкретный объект в результате анализа — товар, отзыв или категория.
-
-    Универсальная единица ответа: вместо счётчика «3520 товаров»
-    CI возвращает список конкретных объектов с причинами и действием.
-    """
-
-    entity_type: str = Field(
-        ...,
-        description="Тип объекта: product, review, category",
-    )
-    entity_id: str = Field(
-        ...,
-        description="Идентификатор: product_code (ЦБ-XXXXXXXX) или review_id",
-    )
-    name: str = Field(..., description="Название товара/категории")
+    entity_type: str = Field(..., description="product, review, category, ...")
+    entity_id: str = Field(..., description="Stable entity identifier")
+    name: str = Field(..., description="Human-readable entity name")
     priority: str = Field(
         "medium",
-        description="Приоритет: critical, high, medium, low",
+        description="critical, high, medium, or low",
     )
     reasons: list[str] = Field(
         default_factory=list,
-        description="Конкретные причины с цифрами, почему объект в результате",
+        description="Concrete reasons with numbers when available",
     )
     metrics: dict = Field(
         default_factory=dict,
-        description="Рассчитанные показатели: {sales_current: 120, change_pct: -36.8}",
+        description="Computed metrics for the finding",
     )
     recommended_action: str = Field(
         "",
-        description="Конкретное действие менеджера",
+        description="Concrete manager action",
     )
+
+
+class ExecutionDatasetMetadata(BaseModel):
+    dataset_id: str = Field(..., description="Dataset identifier")
+    dataset_version_id: str = Field(..., description="Exact dataset version identifier")
+    original_filename: str = Field(..., description="Uploaded filename")
+    format: str = Field(..., description="Dataset format")
+    checksum_sha256: str = Field(..., description="Blob checksum")
+
+
+class ExecutionMetadata(BaseModel):
+    manifest_version: str = Field(..., description="Execution manifest schema version")
+    analysis_id: str | None = Field(default=None, description="Analysis identifier")
+    datasets: list[ExecutionDatasetMetadata] = Field(default_factory=list)
 
 
 class ExecutionResult(BaseModel):
-    """Результат выполнения анализа — выход Executor."""
-
-    question: str = Field(..., description="Исходный вопрос менеджера")
-    skill: SkillType = Field(..., description="Использованный skill")
+    question: str = Field(..., description="Original manager question")
+    skill: SkillType = Field(..., description="Selected analytical skill")
     answer_status: str = Field(
         "answered",
-        description="Статус ответа: answered, partial, not_enough_data",
+        description="answered, partial, or not_enough_data",
     )
     findings: list[Finding] = Field(
         default_factory=list,
-        description="Конкретные объекты (товары/отзывы) с причинами и действиями",
+        description="Concrete findings returned to the manager",
     )
     hypothesis_results: list[HypothesisResult] = Field(
         default_factory=list,
-        description="Результаты по гипотезам (опционально, не основной формат)",
+        description="Optional per-hypothesis results",
     )
     charts: list[str] = Field(
         default_factory=list,
-        description="Пути к PNG файлам графиков",
+        description="Downloaded chart paths",
     )
     summary: str = Field(
         "",
-        description="Человекочитаемый ответ менеджеру (от Reporter LLM)",
+        description="Human-readable final answer",
     )
     limitations: list[str] = Field(
         default_factory=list,
-        description="Ограничения анализа",
+        description="Limitations of the analysis",
     )
     code_generated: str | None = Field(
         None,
-        description="Python код, сгенерированный LLM",
+        description="Generated Python code when available",
     )
     errors: list[str] = Field(
         default_factory=list,
-        description="Ошибки при выполнении",
+        description="Execution errors",
+    )
+    execution_metadata: ExecutionMetadata | None = Field(
+        default=None,
+        description="Resolved dataset provenance for the execution",
     )

@@ -23,9 +23,12 @@ import math
 
 from dotenv import load_dotenv
 
+from agent.runtime.execution_manifest import ExecutionManifest
 from agent.schemas import (
     SkillType,
     AnalysisPlan,
+    ExecutionDatasetMetadata,
+    ExecutionMetadata,
     ExecutionResult,
     Finding,
     HypothesisResult,
@@ -960,14 +963,163 @@ def _execute_exemplar(plan: AnalysisPlan, max_retries: int = 2) -> ExecutionResu
     )
 
 
-def execute(plan: AnalysisPlan, max_retries: int = 2) -> ExecutionResult:
-    """Facade: use exemplar runtime for sales-decline, fallback to legacy elsewhere."""
-    legacy_enabled = os.getenv("MIRROLLA_USE_LEGACY_EXECUTOR", "").lower() in {"1", "true", "yes"}
-    if not legacy_enabled and plan.skill == SkillType.SALES_DECLINE:
-        try:
-            return _execute_exemplar(plan, max_retries=max_retries)
-        except Exception as e:
-            print(f"  [Executor] ⚠ Exemplar runtime failed, fallback to legacy: {e}")
+def _build_attached_profile_block(execution_manifest: ExecutionManifest) -> str:
+    lines = [
+        "## Attached datasets for this analysis",
+        "Use only these files and only these profiled columns.",
+        "Do not assume any global demo files, schemas, or hidden columns.",
+    ]
+    for dataset in execution_manifest.datasets:
+        lines.append(
+            f"### {dataset.sandbox_filename} | dataset_version_id={dataset.dataset_version_id} | display_name={dataset.display_name} | format={dataset.format}"
+        )
+        for sheet in dataset.profile.sheets:
+            lines.append(
+                f"- sheet: {sheet.name} | row_count={sheet.row_count} | sampled={sheet.sampled}"
+            )
+            for warning in sheet.warnings:
+                lines.append(f"  - warning: {warning}")
+            for column in sheet.columns:
+                parts = [
+                    f"  - column: {column.name}",
+                    f"type={column.inferred_type}",
+                    f"null_ratio={column.null_ratio:.3f}",
+                ]
+                if column.unique_count is not None:
+                    parts.append(f"unique={column.unique_count}")
+                if column.min_value is not None:
+                    parts.append(f"min={column.min_value}")
+                if column.max_value is not None:
+                    parts.append(f"max={column.max_value}")
+                if column.examples:
+                    parts.append(f"examples={', '.join(column.examples)}")
+                lines.append(" | ".join(parts))
+        for warning in dataset.profile.warnings:
+            lines.append(f"- profile_warning: {warning}")
+    return "\n".join(lines)
+
+
+def _build_attached_prompt(
+    plan: AnalysisPlan,
+    execution_manifest: ExecutionManifest,
+) -> str:
+    skill_md = _load_skill_md(plan.skill)
+    helpers_code = _load_helpers_code()
+    hypotheses_text = []
+    for hypothesis in plan.hypotheses:
+        hypotheses_text.append(
+            f"### {hypothesis.id}: {hypothesis.title}\n"
+            f"- Datasets: {', '.join(hypothesis.datasets)}\n"
+            f"- Method: {hypothesis.method}\n"
+        )
+    return (
+        f"{UNIVERSAL_ANALYSIS_INSTRUCTIONS}\n\n"
+        f"## Skill\n{plan.skill.value}\n\n"
+        f"## Question\n{plan.question}\n\n"
+        f"## Skill instructions\n{skill_md}\n\n"
+        f"## Attached execution manifest\n"
+        f"analysis_id={execution_manifest.analysis_id}\n"
+        f"manifest_version={execution_manifest.manifest_version}\n\n"
+        f"{_build_attached_profile_block(execution_manifest)}\n\n"
+        f"## Hypotheses to validate\n{''.join(hypotheses_text)}\n"
+        f"## Reference helpers\n{helpers_code}\n"
+    )
+
+
+def _build_execution_metadata(
+    execution_manifest: ExecutionManifest | None,
+    analysis_id: str | None,
+) -> ExecutionMetadata | None:
+    if execution_manifest is None:
+        return None
+    return ExecutionMetadata(
+        manifest_version=execution_manifest.manifest_version,
+        analysis_id=analysis_id,
+        datasets=[
+            ExecutionDatasetMetadata(
+                dataset_id=item.dataset_id,
+                dataset_version_id=item.dataset_version_id,
+                original_filename=item.original_filename,
+                format=item.format,
+                checksum_sha256=item.checksum_sha256,
+            )
+            for item in execution_manifest.datasets
+        ],
+    )
+
+
+def _execute_attached(
+    plan: AnalysisPlan,
+    *,
+    analysis_id: str | None,
+    execution_manifest: ExecutionManifest,
+    file_paths: list[str],
+    max_retries: int = 2,
+) -> ExecutionResult:
+    from agent.ci_runner import CIRunner
+
+    prompt = _build_attached_prompt(plan, execution_manifest)
+    runner = CIRunner()
+    errors: list[str] = []
+    limitations = list(plan.limitations)
+    execution_metadata = _build_execution_metadata(execution_manifest, analysis_id)
+    ci_result = runner.run_analysis(
+        prompt=prompt,
+        file_paths=file_paths,
+        max_retries=max_retries,
+    )
+    if ci_result.get("error"):
+        errors.append(ci_result["error"])
+
+    findings, hypothesis_results, answer_status, answer, extra_lim = _parse_ci_result(ci_result, plan)
+    limitations.extend(extra_lim)
+
+    try:
+        from agent.reporter import synthesize as reporter_synthesize
+
+        manager_answer = reporter_synthesize(
+            question=plan.question,
+            skill=plan.skill,
+            findings=findings,
+            limitations=limitations,
+            answer_status=answer_status,
+            ci_answer=answer,
+        )
+    except Exception as exc:
+        manager_answer = answer
+        errors.append(f"Reporter error: {exc}")
+
+    return ExecutionResult(
+        question=plan.question,
+        skill=plan.skill,
+        answer_status=answer_status,
+        findings=findings,
+        hypothesis_results=hypothesis_results,
+        charts=ci_result.get("charts", []),
+        summary=manager_answer,
+        limitations=limitations,
+        code_generated=None,
+        errors=errors,
+        execution_metadata=execution_metadata,
+    )
+
+
+def execute(
+    plan: AnalysisPlan,
+    *,
+    analysis_id: str | None = None,
+    execution_manifest: ExecutionManifest | None = None,
+    file_paths: list[str] | None = None,
+    max_retries: int = 2,
+) -> ExecutionResult:
+    if execution_manifest is not None:
+        return _execute_attached(
+            plan,
+            analysis_id=analysis_id,
+            execution_manifest=execution_manifest,
+            file_paths=list(file_paths or []),
+            max_retries=max_retries,
+        )
     return _execute_legacy(plan, max_retries=max_retries)
 
 
