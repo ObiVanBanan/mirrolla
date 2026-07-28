@@ -263,11 +263,16 @@ async def main_page():
     return FileResponse(UI_INDEX)
 
 
-@app.get("/ui/dataset_workspace.js", include_in_schema=False)
+@app.get("/dataset_workspace.js", include_in_schema=False)
 async def dataset_workspace_script():
     if not os.path.exists(DATASET_WORKSPACE_JS):
         raise HTTPException(status_code=404, detail="ui/dataset_workspace.js not found")
     return FileResponse(DATASET_WORKSPACE_JS, media_type="application/javascript")
+
+
+@app.get("/ui/dataset_workspace.js", include_in_schema=False)
+async def dataset_workspace_script_legacy():
+    return await dataset_workspace_script()
 
 
 @app.post("/api/v1/analyses", response_model=AnalysisResponse)

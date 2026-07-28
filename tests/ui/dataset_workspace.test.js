@@ -335,3 +335,139 @@ test('multiple ordinary files create separate upload items', () => {
 
   assert.equal(core.state.uploads.length, 2);
 });
+
+test('inline dropzone is present in html and script is served from root path', () => {
+  const html = fs.readFileSync(path.join(__dirname, '../../ui/mirrolla_assistant.html'), 'utf-8');
+
+  assert.match(html, /id="inlineDatasetUpload"/);
+  assert.match(html, /id="inlineDatasetDropzone"/);
+  assert.match(html, /src="\/dataset_workspace\.js"/);
+});
+
+test('inline upload status and drawer use the same upload state', () => {
+  const state = workspace.createInitialDatasetWorkspaceState({
+    initialized: true,
+    uploads: [{
+      id: 'upload-1',
+      file: file('sales.csv'),
+      displayName: 'sales',
+      progress: 64,
+      status: 'uploading',
+      message: 'Uploading',
+      retryable: false
+    }]
+  });
+
+  const inlineHtml = workspace.renderInlineUploadStatus(state);
+  const drawerHtml = workspace.renderUploadList(state);
+
+  assert.match(inlineHtml, /sales\.csv/);
+  assert.match(drawerHtml, /sales\.csv/);
+});
+
+test('csv files are accepted for upload queue', () => {
+  const core = createCore({
+    api: {
+      uploadDataset: async () => new Promise(() => {})
+    }
+  });
+  core.state.initialized = true;
+
+  const accepted = core.queueFiles([file('sales.csv')], {mode: 'upload'});
+
+  assert.equal(accepted, true);
+  assert.equal(core.state.uploads.length, 1);
+});
+
+test('xlsx files are accepted for upload queue', () => {
+  const core = createCore({
+    api: {
+      uploadDataset: async () => new Promise(() => {})
+    }
+  });
+  core.state.initialized = true;
+
+  const accepted = core.queueFiles([file('sales.xlsx')], {mode: 'upload'});
+
+  assert.equal(accepted, true);
+  assert.equal(core.state.uploads.length, 1);
+});
+
+test('json files are accepted for upload queue', () => {
+  const core = createCore({
+    api: {
+      uploadDataset: async () => new Promise(() => {})
+    }
+  });
+  core.state.initialized = true;
+
+  const accepted = core.queueFiles([file('sales.json')], {mode: 'upload'});
+
+  assert.equal(accepted, true);
+  assert.equal(core.state.uploads.length, 1);
+});
+
+test('unsupported extension is rejected', () => {
+  const core = createCore();
+  core.state.initialized = true;
+
+  const accepted = core.queueFiles([file('notes.txt')], {mode: 'upload'});
+
+  assert.equal(accepted, false);
+  assert.equal(core.state.uploads.length, 0);
+  assert.match(core.state.bannerMessage, /\.csv, \.xlsx/i);
+});
+
+test('ready upload is automatically selected for draft analysis', async () => {
+  const core = createCore({
+    api: {
+      listDatasets: async () => ({
+        datasets: [{
+          id: 'dataset-1',
+          display_name: 'Sales',
+          source_type: 'upload',
+          versions: [{
+            id: 'version-1',
+            dataset_id: 'dataset-1',
+            original_filename: 'sales.csv',
+            format: 'csv',
+            size_bytes: 32,
+            status: 'profiling'
+          }]
+        }]
+      }),
+      uploadDataset: async () => ({version: {id: 'version-1'}}),
+      getDatasetVersion: async () => ({
+        id: 'version-1',
+        dataset_id: 'dataset-1',
+        original_filename: 'sales.csv',
+        format: 'csv',
+        size_bytes: 32,
+        status: 'ready'
+      }),
+      getDatasetProfile: async () => ({version_id: 'version-1', status: 'ready', profile: {sheets: []}, issues: []})
+    }
+  });
+
+  core.state.initialized = true;
+  core.queueFiles([file('sales.csv')], {mode: 'upload'});
+
+  await waitFor(() => core.state.draftSelectedVersionIds.includes('version-1'));
+  assert.deepEqual(core.getSubmissionVersionIds(), ['version-1']);
+});
+
+test('remove chip behavior clears ready version from draft selection', () => {
+  const core = createCore();
+  core.state.initialized = true;
+  core.state.datasets = [{
+    id: 'dataset-1',
+    display_name: 'Sales',
+    versions: [{id: 'ready-version', dataset_id: 'dataset-1', status: 'ready'}]
+  }];
+  core.state.draftSelectedVersionIds = ['ready-version'];
+
+  core.toggleDraftSelection('ready-version', false);
+
+  assert.deepEqual(core.state.draftSelectedVersionIds, []);
+  assert.deepEqual(core.getSubmissionVersionIds(), []);
+});

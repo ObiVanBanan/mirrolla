@@ -66,6 +66,49 @@ class ApiTransitionTests(unittest.TestCase):
             time.sleep(0.05)
         self.fail(f"Dataset version {version_id} did not become ready")
 
+    def test_root_serves_html(self):
+        response = self.client.get("/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("text/html", response.headers["content-type"])
+        self.assertIn("inlineDatasetDropzone", response.text)
+
+    def test_dataset_workspace_script_route_serves_javascript(self):
+        response = self.client.get("/dataset_workspace.js")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("application/javascript", response.headers["content-type"])
+        self.assertIn("window.DatasetWorkspace = DatasetWorkspace;", response.text)
+        self.assertNotIn("<!DOCTYPE html>", response.text)
+
+    def test_legacy_dataset_workspace_script_route_serves_same_javascript(self):
+        response = self.client.get("/ui/dataset_workspace.js")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("application/javascript", response.headers["content-type"])
+        self.assertIn("window.DatasetWorkspace = DatasetWorkspace;", response.text)
+
+    def test_docker_ui_config_mounts_dataset_workspace_script(self):
+        with open(
+            os.path.join(api_main.PROJECT_ROOT, "compose.yaml"),
+            "r",
+            encoding="utf-8",
+        ) as compose_file:
+            compose_text = compose_file.read()
+        with open(
+            os.path.join(api_main.PROJECT_ROOT, "ui", "nginx.conf"),
+            "r",
+            encoding="utf-8",
+        ) as nginx_file:
+            nginx_text = nginx_file.read()
+
+        self.assertIn(
+            "./ui/dataset_workspace.js:/usr/share/nginx/html/dataset_workspace.js:ro",
+            compose_text,
+        )
+        self.assertIn("location = /dataset_workspace.js", nginx_text)
+        self.assertIn("try_files $uri =404;", nginx_text)
+
     @patch("api.main.generate_plan")
     @patch("api.main.route_sync")
     def test_create_accepts_legacy_question_only_payload(self, route_sync, generate_plan):

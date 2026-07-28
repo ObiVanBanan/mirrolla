@@ -22,6 +22,7 @@ services:
     container_name: mirrolla-ui
     volumes:
       - ./ui/mirrolla_assistant.html:/usr/share/nginx/html/index.html:ro
+      - ./ui/dataset_workspace.js:/usr/share/nginx/html/dataset_workspace.js:ro
       - ./ui/nginx.conf:/etc/nginx/nginx.conf:ro
     environment:
       # Внутри Docker сети api доступен по hostname "api"

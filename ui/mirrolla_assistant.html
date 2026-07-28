@@ -620,6 +620,51 @@ button {
   pointer-events: none;
 }
 
+.inline-dataset-upload {
+  width: min(900px, 100%);
+  margin: 0 auto 18px;
+  pointer-events: auto;
+}
+
+.inline-dataset-dropzone {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 18px 20px;
+  border: 1px dashed rgba(182,243,107,.26);
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, rgba(24,33,29,.82), rgba(16,22,19,.9));
+  box-shadow: 0 18px 48px rgba(0,0,0,.18);
+  transition: .18s ease;
+}
+
+.inline-dataset-dropzone.dragover {
+  transform: translateY(-1px);
+  border-color: rgba(182,243,107,.52);
+  background:
+    linear-gradient(180deg, rgba(32,44,38,.9), rgba(18,26,22,.96));
+}
+
+.inline-dataset-dropzone strong {
+  display: block;
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.inline-dataset-dropzone p {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.inline-upload-status {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
 .composer {
   position: relative;
   width: min(900px, 100%);
@@ -925,6 +970,43 @@ button {
   justify-content: center;
   gap: 8px;
   margin-top: 25px;
+}
+
+.empty-steps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  width: min(760px, 100%);
+  margin-top: 22px;
+}
+
+.empty-step {
+  padding: 14px 16px;
+  text-align: left;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255,255,255,.022);
+}
+
+.empty-step-label {
+  color: var(--lime);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.empty-step-title {
+  margin-top: 8px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 620;
+}
+
+.empty-step-copy {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11px;
 }
 
 .capability {
@@ -2731,6 +2813,24 @@ button {
               и только после этого выполнит расчёты в изолированной среде.
             </p>
 
+            <div class="empty-steps">
+              <div class="empty-step">
+                <div class="empty-step-label">Шаг 1</div>
+                <div class="empty-step-title">Добавьте данные</div>
+                <div class="empty-step-copy">Загрузите CSV, XLSX или JSON через видимую область ниже.</div>
+              </div>
+              <div class="empty-step">
+                <div class="empty-step-label">Шаг 2</div>
+                <div class="empty-step-title">Задайте вопрос</div>
+                <div class="empty-step-copy">Выберите ready-версии рядом с полем вопроса и отправьте запрос.</div>
+              </div>
+              <div class="empty-step">
+                <div class="empty-step-label">Шаг 3</div>
+                <div class="empty-step-title">Подтвердите план анализа</div>
+                <div class="empty-step-copy">Агент покажет план и выполнит расчёты только после подтверждения.</div>
+              </div>
+            </div>
+
             <div class="examples">
               <button class="example-btn" type="button" onclick="useExample(this)" data-question="Какие товары заканчиваются?">
                 <span class="example-icon">
@@ -2804,6 +2904,22 @@ button {
       </div>
 
       <div class="composer-wrap">
+        <section class="inline-dataset-upload" id="inlineDatasetUpload">
+          <div class="inline-dataset-dropzone" id="inlineDatasetDropzone">
+            <div>
+              <strong>Добавьте данные для анализа</strong>
+              <p>Перетащите CSV, XLSX или JSON сюда</p>
+            </div>
+            <button
+              type="button"
+              class="dataset-btn primary"
+              data-action="pick-files"
+            >
+              Выбрать файлы
+            </button>
+          </div>
+          <div class="inline-upload-status" id="inlineUploadStatus"></div>
+        </section>
         <div class="composer">
           <div class="composer-datasets" id="composerDatasets"></div>
           <div class="composer-main">
@@ -2833,7 +2949,7 @@ button {
   </main>
 </div>
 
-<script src="/ui/dataset_workspace.js"></script>
+<script src="/dataset_workspace.js"></script>
 <script>
 const API = window.location.origin + '/api/v1';
 

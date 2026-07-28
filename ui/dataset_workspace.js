@@ -44,6 +44,25 @@
     return String(name || 'dataset').replace(/\.[^.]+$/, '') || 'dataset';
   }
 
+  function getFileExtension(name) {
+    const match = String(name || '').toLowerCase().match(/(\.[^.]+)$/);
+    return match ? match[1] : '';
+  }
+
+  function isAcceptedUploadFile(file) {
+    return ['.csv', '.xlsx', '.json'].includes(getFileExtension(file?.name));
+  }
+
+  function splitAcceptedUploadFiles(files) {
+    const accepted = [];
+    const rejected = [];
+    Array.from(files || []).forEach(file => {
+      if (isAcceptedUploadFile(file)) accepted.push(file);
+      else rejected.push(file);
+    });
+    return {accepted, rejected};
+  }
+
   function normalizeVersionIdList(values) {
     if (!Array.isArray(values)) return [];
     const seen = new Set();
@@ -272,6 +291,19 @@
       return '<div class="dataset-muted">Загрузки появятся здесь после выбора файлов.</div>';
     }
     return state.uploads.map(renderUploadMarkup).join('');
+  }
+
+  function renderInlineUploadStatus(state) {
+    const parts = [];
+    if (state.bannerMessage) {
+      parts.push(`<div class="dataset-error-banner">${escapeHtml(state.bannerMessage)}</div>`);
+    }
+    if (state.uploads.length) {
+      parts.push(renderUploadList(state));
+    } else {
+      parts.push('<div class="dataset-muted">Файлы появятся здесь после выбора или перетаскивания.</div>');
+    }
+    return parts.join('');
   }
 
   function renderVersionProfile(profilePayload, version) {
@@ -593,14 +625,25 @@
     }
 
     function queueFiles(files, context = null) {
-      const result = createUploadItems(files, context, options.createUploadId || defaultCreateUploadId);
+      const split = splitAcceptedUploadFiles(files);
+      if (!split.accepted.length) {
+        state.bannerMessage = split.rejected.length
+          ? 'Поддерживаются только файлы .csv, .xlsx и .json.'
+          : '';
+        emit();
+        return false;
+      }
+
+      const result = createUploadItems(split.accepted, context, options.createUploadId || defaultCreateUploadId);
       if (result.error) {
         state.bannerMessage = result.error;
         emit();
         return false;
       }
 
-      state.bannerMessage = '';
+      state.bannerMessage = split.rejected.length
+        ? 'Неподдерживаемые файлы пропущены. Загрузите только .csv, .xlsx или .json.'
+        : '';
       result.items.reverse().forEach(item => {
         state.uploads.unshift(item);
       });
@@ -721,6 +764,13 @@
                   false
                 );
               });
+
+              if (version.status === 'ready' && state.selectionMode === 'draft') {
+                const selected = new Set(state.draftSelectedVersionIds);
+                selected.add(version.id);
+                state.draftSelectedVersionIds = Array.from(selected);
+                persistDraftSelection();
+              }
 
               state.retryableVersionIds.delete(versionId);
               emit();
@@ -930,6 +980,7 @@
     });
     const fileInput = root.querySelector('#datasetFileInput');
     const dropzone = root.querySelector('#datasetDropzone');
+    const inlineDropzone = root.querySelector('#inlineDatasetDropzone');
     const elements = {
       drawer: root.querySelector('#datasetDrawer'),
       backdrop: root.querySelector('#datasetBackdrop'),
@@ -939,7 +990,9 @@
       datasetWorkspaceSummary: root.querySelector('#datasetWorkspaceSummary'),
       composerDatasets: root.querySelector('#composerDatasets'),
       datasetLauncherCount: root.querySelector('#datasetLauncherCount'),
-      drawerError: root.querySelector('#datasetDrawerError')
+      drawerError: root.querySelector('#datasetDrawerError'),
+      inlineUploadStatus: root.querySelector('#inlineUploadStatus'),
+      composerContext: root.querySelector('.composer-context')
     };
 
     const core = createDatasetWorkspaceCore({
@@ -956,12 +1009,21 @@
       elements.backdrop.classList.toggle('visible', state.drawerOpen);
       elements.uploadQueueSummary.textContent = `${state.uploads.length} ${pluralize(state.uploads.length, 'файл', 'файла', 'файлов')}`;
       elements.uploadList.innerHTML = renderUploadList(state);
+      if (elements.inlineUploadStatus) {
+        elements.inlineUploadStatus.innerHTML = renderInlineUploadStatus(state);
+      }
       elements.datasetList.innerHTML = renderDatasetListMarkup(state);
       elements.datasetWorkspaceSummary.textContent = `${state.datasets.length} ${pluralize(state.datasets.length, 'набор', 'набора', 'наборов')}`;
       elements.datasetLauncherCount.textContent = String(getDraftReadyVersionIds(state).length);
       elements.composerDatasets.innerHTML = renderComposerMarkup(state);
       elements.drawerError.hidden = !state.bannerMessage;
       elements.drawerError.textContent = state.bannerMessage || '';
+      if (elements.composerContext) {
+        elements.composerContext.innerHTML = `
+          <span class="context-chip">Ready files attach to the analysis</span>
+          <span>Use the drawer to manage workspace versions and profiles</span>
+        `;
+      }
     }
 
     function handleFileInputChange(files) {
@@ -1029,26 +1091,33 @@
       }
     }
 
-    ['dragenter', 'dragover'].forEach(eventName => {
-      dropzone.addEventListener(eventName, event => {
-        event.preventDefault();
-        dropzone.classList.add('dragover');
+    function bindDropzone(zone) {
+      if (!zone) return;
+      ['dragenter', 'dragover'].forEach(eventName => {
+        zone.addEventListener(eventName, event => {
+          event.preventDefault();
+          zone.classList.add('dragover');
+        });
       });
-    });
 
-    ['dragleave', 'dragend', 'drop'].forEach(eventName => {
-      dropzone.addEventListener(eventName, event => {
-        event.preventDefault();
-        dropzone.classList.remove('dragover');
+      ['dragleave', 'dragend', 'drop'].forEach(eventName => {
+        zone.addEventListener(eventName, event => {
+          event.preventDefault();
+          zone.classList.remove('dragover');
+        });
       });
-    });
 
-    dropzone.addEventListener('drop', event => {
-      const files = Array.from(event.dataTransfer?.files || []);
-      if (files.length) {
-        core.queueFiles(files, {mode: 'upload', datasetId: null});
-      }
-    });
+      zone.addEventListener('drop', event => {
+        event.preventDefault();
+        const files = Array.from(event.dataTransfer?.files || []);
+        if (files.length) {
+          core.queueFiles(files, {mode: 'upload', datasetId: null});
+        }
+      });
+    }
+
+    bindDropzone(dropzone);
+    bindDropzone(inlineDropzone);
 
     root.addEventListener('click', handleClick);
     root.addEventListener('change', handleChange);
@@ -1075,6 +1144,9 @@
     pluralize,
     formatBytes,
     stemFilename,
+    getFileExtension,
+    isAcceptedUploadFile,
+    splitAcceptedUploadFiles,
     normalizeVersionIdList,
     createInitialDatasetWorkspaceState,
     buildVersionIndex,
@@ -1084,6 +1156,7 @@
     shouldShowCancel,
     renderUploadMarkup,
     renderUploadList,
+    renderInlineUploadStatus,
     renderDatasetCardMarkup,
     renderDatasetListMarkup,
     renderComposerMarkup,
@@ -1095,5 +1168,8 @@
     module.exports = DatasetWorkspace;
   }
 
+  if (typeof window !== 'undefined') {
+    window.DatasetWorkspace = DatasetWorkspace;
+  }
   global.DatasetWorkspace = DatasetWorkspace;
 })(typeof window !== 'undefined' ? window : globalThis);
