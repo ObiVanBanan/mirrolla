@@ -2107,6 +2107,458 @@ button {
     padding-left: 13px;
   }
 }
+
+/* === Dataset workspace === */
+
+.dataset-launcher {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 14px;
+  border: 1px solid rgba(182,243,107,.24);
+  border-radius: 999px;
+  color: var(--lime);
+  background: rgba(182,243,107,.08);
+  cursor: pointer;
+  transition: .2s ease;
+}
+
+.dataset-launcher:hover {
+  transform: translateY(-1px);
+  background: rgba(182,243,107,.13);
+}
+
+.dataset-launcher-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 7px;
+  border-radius: 999px;
+  color: #12180f;
+  background: var(--lime);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.dataset-backdrop {
+  position: absolute;
+  z-index: 18;
+  inset: 0;
+  display: none;
+  background: rgba(2, 4, 4, .62);
+  backdrop-filter: blur(4px);
+}
+
+.dataset-backdrop.visible {
+  display: block;
+}
+
+.dataset-drawer {
+  position: absolute;
+  z-index: 19;
+  top: 16px;
+  right: 16px;
+  bottom: 16px;
+  width: min(470px, calc(100vw - 32px));
+  display: flex;
+  flex-direction: column;
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 24px;
+  background: rgba(12, 17, 15, .96);
+  box-shadow: var(--shadow-lg);
+  transform: translateX(calc(100% + 28px));
+  transition: transform .24s ease;
+  overflow: hidden;
+}
+
+.dataset-drawer.open {
+  transform: translateX(0);
+}
+
+.dataset-drawer-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 20px 22px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.dataset-drawer-header h3 {
+  font-size: 19px;
+  font-weight: 680;
+  letter-spacing: -.02em;
+}
+
+.dataset-drawer-header p {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.drawer-close {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  color: var(--text-soft);
+  background: rgba(255,255,255,.03);
+  cursor: pointer;
+}
+
+.drawer-close:hover {
+  background: rgba(255,255,255,.06);
+}
+
+.dataset-drawer-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 18px 22px 22px;
+}
+
+.dataset-dropzone {
+  position: relative;
+  padding: 18px;
+  border: 1px dashed rgba(182,243,107,.26);
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, rgba(182,243,107,.05), rgba(182,243,107,.02));
+  transition: .2s ease;
+}
+
+.dataset-dropzone.dragover {
+  border-color: rgba(182,243,107,.48);
+  background: rgba(182,243,107,.10);
+}
+
+.dataset-dropzone h4 {
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.dataset-dropzone p {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.dataset-dropzone-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.dataset-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  color: var(--text);
+  background: rgba(255,255,255,.04);
+  cursor: pointer;
+  transition: .18s ease;
+}
+
+.dataset-btn:hover {
+  background: rgba(255,255,255,.08);
+}
+
+.dataset-btn.primary {
+  color: #12180f;
+  border-color: transparent;
+  background: linear-gradient(145deg, #c8fa87, #9ee157);
+}
+
+.dataset-btn.danger {
+  color: var(--red);
+  border-color: rgba(239,125,120,.24);
+  background: rgba(239,125,120,.08);
+}
+
+.dataset-muted {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.dataset-section {
+  margin-top: 18px;
+}
+
+.dataset-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.dataset-section-head h4 {
+  font-size: 12px;
+  letter-spacing: .07em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.upload-list,
+.dataset-list {
+  display: grid;
+  gap: 12px;
+}
+
+.upload-card,
+.dataset-card {
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: rgba(255,255,255,.03);
+}
+
+.upload-card {
+  padding: 14px;
+}
+
+.upload-head,
+.dataset-card-head,
+.version-row-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.upload-name,
+.dataset-card-title {
+  font-weight: 650;
+  letter-spacing: -.01em;
+}
+
+.upload-meta,
+.dataset-card-meta,
+.version-meta,
+.version-sheet-meta {
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.upload-progress {
+  margin-top: 12px;
+  height: 7px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255,255,255,.06);
+}
+
+.upload-progress-bar {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #b6f36b, #77d59b);
+  transition: width .18s ease;
+}
+
+.upload-status {
+  margin-top: 9px;
+  font-size: 12px;
+}
+
+.upload-status.error,
+.version-issues {
+  color: var(--red);
+}
+
+.upload-status.done {
+  color: var(--green);
+}
+
+.dataset-card {
+  padding: 16px;
+}
+
+.dataset-card-actions,
+.version-actions,
+.composer-datasets,
+.profile-sheet-list,
+.version-issues,
+.version-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.dataset-card-body {
+  margin-top: 14px;
+  display: grid;
+  gap: 12px;
+}
+
+.version-row {
+  padding: 14px;
+  border: 1px solid rgba(255,255,255,.05);
+  border-radius: 15px;
+  background: rgba(7, 10, 9, .46);
+}
+
+.version-select {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.version-select input {
+  margin-top: 4px;
+}
+
+.version-copy {
+  min-width: 0;
+  flex: 1;
+}
+
+.version-title {
+  font-weight: 620;
+}
+
+.version-sheet {
+  padding: 10px;
+  border-radius: 12px;
+  background: rgba(255,255,255,.03);
+}
+
+.version-sheet strong {
+  display: block;
+  font-size: 12px;
+}
+
+.version-sheet-meta {
+  margin-top: 4px;
+}
+
+.version-chip,
+.dataset-status,
+.issue-chip,
+.composer-file-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 26px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 640;
+}
+
+.dataset-status.ready {
+  color: var(--green);
+  background: rgba(119,213,155,.11);
+}
+
+.dataset-status.profiling,
+.dataset-status.uploaded,
+.dataset-status.receiving {
+  color: var(--blue);
+  background: rgba(119,170,247,.12);
+}
+
+.dataset-status.invalid,
+.issue-chip.error {
+  color: var(--red);
+  background: rgba(239,125,120,.11);
+}
+
+.dataset-status.deleted {
+  color: var(--muted);
+  background: rgba(255,255,255,.05);
+}
+
+.issue-chip.warning {
+  color: var(--orange);
+  background: rgba(238,173,99,.12);
+}
+
+.composer-datasets {
+  margin: 0 0 10px;
+}
+
+.composer-file-chip {
+  color: var(--text-soft);
+  border: 1px solid rgba(182,243,107,.18);
+  background: rgba(182,243,107,.08);
+}
+
+.composer-file-chip button {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: 999px;
+  color: inherit;
+  background: rgba(255,255,255,.08);
+  cursor: pointer;
+}
+
+.composer-empty-datasets {
+  color: var(--muted-2);
+  font-size: 11px;
+}
+
+.dataset-inline-link {
+  color: var(--lime);
+  cursor: pointer;
+}
+
+.dataset-error-banner {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px solid rgba(239,125,120,.18);
+  border-radius: 14px;
+  color: var(--red);
+  background: rgba(239,125,120,.08);
+  font-size: 12px;
+}
+
+@media (max-width: 1080px) {
+  .dataset-drawer {
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(100vw, 560px);
+    border-radius: 0;
+  }
+}
+
+@media (max-width: 760px) {
+  .dataset-launcher span:not(.dataset-launcher-count) {
+    display: none;
+  }
+
+  .dataset-drawer {
+    width: 100vw;
+  }
+
+  .dataset-drawer-body {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .dataset-drawer-header {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .composer-datasets {
+    gap: 6px;
+  }
+}
 </style>
 </head>
 <body>
@@ -2187,6 +2639,14 @@ button {
       </div>
 
       <div class="header-right">
+        <button class="dataset-launcher" type="button" onclick="openDatasetDrawer()" aria-label="Открыть файлы данных">
+          <svg class="icon-sm" viewBox="0 0 24 24" fill="none">
+            <path d="M5 8.5 12 5l7 3.5v7L12 19l-7-3.5v-7Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+            <path d="m5 8.5 7 3.5 7-3.5M12 12v7" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+          </svg>
+          <span>Данные</span>
+          <span class="dataset-launcher-count" id="datasetLauncherCount">0</span>
+        </button>
         <div class="model-pill">
           <span class="spark">✦</span>
           Agentic analytics
@@ -2198,6 +2658,57 @@ button {
     </header>
 
     <section class="workspace">
+      <div class="dataset-backdrop" id="datasetBackdrop" onclick="closeDatasetDrawer()"></div>
+      <aside class="dataset-drawer" id="datasetDrawer" aria-label="Файлы данных">
+        <div class="dataset-drawer-header">
+          <div>
+            <h3>Файлы данных</h3>
+            <p>Загрузите CSV, JSON или XLSX. Для анализа доступны только версии со статусом ready.</p>
+          </div>
+          <button class="drawer-close" type="button" onclick="closeDatasetDrawer()" aria-label="Закрыть">
+            <svg class="icon-sm" viewBox="0 0 24 24" fill="none">
+              <path d="m7 7 10 10M17 7 7 17" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+            </svg>
+          </button>
+        </div>
+        <div class="dataset-drawer-body">
+          <input class="sr-only" id="datasetFileInput" type="file" accept=".xlsx,.csv,.json" multiple>
+          <div class="dataset-dropzone" id="datasetDropzone">
+            <h4>Перетащите файлы сюда</h4>
+            <p>До трёх загрузок одновременно. Профилирование завершится в фоне, список обновится автоматически.</p>
+            <div class="dataset-dropzone-actions">
+              <button class="dataset-btn primary" type="button" onclick="openDatasetFilePicker()">
+                <svg class="icon-sm" viewBox="0 0 24 24" fill="none">
+                  <path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                </svg>
+                Выбрать файлы
+              </button>
+              <span class="dataset-muted">Поддерживаются `.csv`, `.json`, `.xlsx`</span>
+            </div>
+            <div class="dataset-error-banner" id="datasetDrawerError" hidden></div>
+          </div>
+
+          <section class="dataset-section">
+            <div class="dataset-section-head">
+              <h4>Очередь загрузки</h4>
+              <span class="dataset-muted" id="uploadQueueSummary">0 файлов</span>
+            </div>
+            <div class="upload-list" id="uploadList">
+              <div class="dataset-muted">Загрузки появятся здесь после выбора файлов.</div>
+            </div>
+          </section>
+
+          <section class="dataset-section">
+            <div class="dataset-section-head">
+              <h4>Workspace</h4>
+              <span class="dataset-muted" id="datasetWorkspaceSummary">0 наборов</span>
+            </div>
+            <div class="dataset-list" id="datasetList">
+              <div class="dataset-muted">Загрузка списка данных…</div>
+            </div>
+          </section>
+        </div>
+      </aside>
       <div class="content" id="content">
         <div class="content-inner">
           <div class="empty-state">
@@ -2291,6 +2802,7 @@ button {
 
       <div class="composer-wrap">
         <div class="composer">
+          <div class="composer-datasets" id="composerDatasets"></div>
           <div class="composer-main">
             <label class="sr-only" for="questionInput">Вопрос менеджера</label>
             <textarea
@@ -2320,10 +2832,26 @@ button {
 
 <script>
 const API = window.location.origin + '/api/v1';
+const DEFAULT_WORKSPACE_ID = 'default';
+const MAX_PARALLEL_UPLOADS = 3;
+const DATASET_SELECTED_STORAGE_KEY = 'mirrolla.dataset.selectedVersionIds';
+const DATASET_WORKSPACE_STORAGE_KEY = 'mirrolla.dataset.workspaceId';
 
 let currentAnalysisId = null;
 let analyses = [];
 const activePolls = new Set();
+const datasetState = {
+  workspaceId: loadStoredWorkspaceId(),
+  datasets: [],
+  selectedVersionIds: loadStoredSelectedVersionIds(),
+  uploads: [],
+  activeUploads: new Map(),
+  profileCache: new Map(),
+  activeVersionPolls: new Set(),
+  drawerOpen: false,
+  filePickerContext: null,
+  initialized: false
+};
 
 const STATUS_LABELS = {
   idle: 'Готов к работе',
@@ -2343,7 +2871,10 @@ async function apiCreate(question) {
   const response = await fetch(`${API}/analyses`, {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({question})
+    body: JSON.stringify({
+      question,
+      dataset_version_ids: datasetState.selectedVersionIds
+    })
   });
 
   if (!response.ok) {
@@ -2401,6 +2932,85 @@ async function apiRevise(id, feedback) {
   return response.json();
 }
 
+async function apiGetDefaultWorkspace() {
+  const response = await fetch(`${API}/workspaces/default`);
+  if (!response.ok) {
+    throw new Error(`Не удалось получить workspace (${response.status})`);
+  }
+  return response.json();
+}
+
+async function apiListDatasets(workspaceId) {
+  const response = await fetch(`${API}/workspaces/${encodeURIComponent(workspaceId)}/datasets`);
+  if (!response.ok) {
+    throw new Error(`Не удалось получить список файлов (${response.status})`);
+  }
+  return response.json();
+}
+
+async function apiGetDatasetVersion(versionId) {
+  const response = await fetch(`${API}/dataset-versions/${encodeURIComponent(versionId)}`);
+  if (!response.ok) {
+    throw new Error(`Не удалось получить статус файла (${response.status})`);
+  }
+  return response.json();
+}
+
+async function apiGetDatasetProfile(versionId) {
+  const response = await fetch(`${API}/dataset-versions/${encodeURIComponent(versionId)}/profile`);
+  if (!response.ok) {
+    throw new Error(`Не удалось получить профиль файла (${response.status})`);
+  }
+  return response.json();
+}
+
+async function apiDeleteDatasetVersion(versionId) {
+  const response = await fetch(`${API}/dataset-versions/${encodeURIComponent(versionId)}`, {
+    method: 'DELETE'
+  });
+  if (!response.ok) {
+    const detail = await safeJsonDetail(response);
+    throw new Error(detail || `Не удалось удалить файл (${response.status})`);
+  }
+  return response.json();
+}
+
+function apiUploadDataset({workspaceId, file, displayName, datasetId, onProgress, signal}) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `${API}/workspaces/${encodeURIComponent(workspaceId)}/datasets`);
+    xhr.responseType = 'json';
+
+    xhr.upload.addEventListener('progress', event => {
+      if (event.lengthComputable && typeof onProgress === 'function') {
+        onProgress(Math.max(0, Math.min(100, Math.round((event.loaded / event.total) * 100))));
+      }
+    });
+
+    xhr.onload = async () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(xhr.response);
+        return;
+      }
+
+      reject(new Error(parseUploadError(xhr)));
+    };
+
+    xhr.onerror = () => reject(new Error('Не удалось загрузить файл. Проверьте сеть и повторите попытку.'));
+    xhr.onabort = () => reject(new Error('Загрузка отменена.'));
+
+    if (signal) {
+      signal.addEventListener('abort', () => xhr.abort(), {once: true});
+    }
+
+    const body = new FormData();
+    body.append('file', file, file.name);
+    if (displayName) body.append('display_name', displayName);
+    if (datasetId) body.append('dataset_id', datasetId);
+    xhr.send(body);
+  });
+}
+
 /* =========================================================
    Workspace actions
    ========================================================= */
@@ -2424,6 +3034,7 @@ function resetWorkspace() {
   `;
 
   renderHistory();
+  renderComposerDatasets();
   toggleSidebar(false);
   setTimeout(() => document.getElementById('questionInput').focus(), 80);
 }
@@ -2526,6 +3137,11 @@ async function createAnalysis() {
     const data = await apiCreate(question);
 
     currentAnalysisId = data.id;
+    if (Array.isArray(data.dataset_version_ids)) {
+      datasetState.selectedVersionIds = data.dataset_version_ids.slice();
+      persistDatasetSelection();
+      renderComposerDatasets();
+    }
     upsertAnalysis(data, true);
 
     input.value = '';
@@ -2700,6 +3316,11 @@ async function loadAnalysis(id) {
 
   try {
     const data = await apiGet(id);
+    if (Array.isArray(data.dataset_version_ids)) {
+      datasetState.selectedVersionIds = data.dataset_version_ids.slice();
+      persistDatasetSelection();
+      renderComposerDatasets();
+    }
     upsertAnalysis(data);
     renderHistory();
     renderAnalysis(data);
@@ -3069,6 +3690,635 @@ function prependStatus(type, title, message) {
 }
 
 /* =========================================================
+   Dataset workspace
+   ========================================================= */
+
+function loadStoredSelectedVersionIds() {
+  try {
+    const raw = localStorage.getItem(DATASET_SELECTED_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed.filter(value => typeof value === 'string') : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function loadStoredWorkspaceId() {
+  try {
+    return localStorage.getItem(DATASET_WORKSPACE_STORAGE_KEY) || DEFAULT_WORKSPACE_ID;
+  } catch (_) {
+    return DEFAULT_WORKSPACE_ID;
+  }
+}
+
+function persistDatasetSelection() {
+  try {
+    localStorage.setItem(DATASET_SELECTED_STORAGE_KEY, JSON.stringify(datasetState.selectedVersionIds));
+  } catch (_) {
+    // Ignore storage quota errors in UI state persistence.
+  }
+}
+
+function persistWorkspaceId() {
+  try {
+    localStorage.setItem(DATASET_WORKSPACE_STORAGE_KEY, datasetState.workspaceId || DEFAULT_WORKSPACE_ID);
+  } catch (_) {
+    // Ignore storage quota errors in UI state persistence.
+  }
+}
+
+async function initDatasetWorkspace() {
+  try {
+    const workspace = await apiGetDefaultWorkspace();
+    datasetState.workspaceId = workspace.id || DEFAULT_WORKSPACE_ID;
+    persistWorkspaceId();
+    await refreshDatasetWorkspace({silent: false});
+    datasetState.initialized = true;
+  } catch (error) {
+    renderDatasetWorkspaceError(error.message || 'Не удалось загрузить workspace с файлами.');
+  }
+}
+
+async function refreshDatasetWorkspace({silent = true} = {}) {
+  if (!silent) {
+    renderDatasetWorkspaceLoading();
+  }
+
+  const payload = await apiListDatasets(datasetState.workspaceId || DEFAULT_WORKSPACE_ID);
+  datasetState.datasets = Array.isArray(payload.datasets) ? payload.datasets : [];
+  pruneMissingSelections();
+  await hydrateDatasetProfiles(datasetState.datasets);
+  renderDatasetWorkspace();
+  renderComposerDatasets();
+}
+
+async function hydrateDatasetProfiles(datasets) {
+  const pending = [];
+
+  datasets.forEach(dataset => {
+    (dataset.versions || []).forEach(version => {
+      if (['ready', 'invalid'].includes(version.status) && !datasetState.profileCache.has(version.id)) {
+        pending.push(
+          apiGetDatasetProfile(version.id)
+            .then(profile => {
+              datasetState.profileCache.set(version.id, profile);
+            })
+            .catch(() => {})
+        );
+      }
+
+      if (version.status === 'profiling') {
+        monitorVersion(version.id);
+      }
+    });
+  });
+
+  if (pending.length) {
+    await Promise.all(pending);
+  }
+}
+
+function openDatasetDrawer() {
+  datasetState.drawerOpen = true;
+  document.getElementById('datasetDrawer').classList.add('open');
+  document.getElementById('datasetBackdrop').classList.add('visible');
+}
+
+function closeDatasetDrawer() {
+  datasetState.drawerOpen = false;
+  document.getElementById('datasetDrawer').classList.remove('open');
+  document.getElementById('datasetBackdrop').classList.remove('visible');
+}
+
+function openDatasetFilePicker(datasetId = null, displayName = null) {
+  datasetState.filePickerContext = {datasetId, displayName};
+  document.getElementById('datasetFileInput').click();
+}
+
+function handleDatasetInputChange(event) {
+  const files = Array.from(event.target.files || []);
+  if (!files.length) {
+    return;
+  }
+
+  const context = datasetState.filePickerContext;
+  queueDatasetUploads(files, context);
+  event.target.value = '';
+  datasetState.filePickerContext = null;
+}
+
+function queueDatasetUploads(files, context = null) {
+  hideDatasetWorkspaceError();
+
+  files.forEach(file => {
+    const uploadId = `upload_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    datasetState.uploads.unshift({
+      id: uploadId,
+      file,
+      datasetId: context?.datasetId || null,
+      displayName: context?.displayName || stemFilename(file.name),
+      progress: 0,
+      status: 'queued',
+      message: 'Ожидает свободный слот',
+      controller: new AbortController(),
+      versionId: null
+    });
+  });
+
+  renderUploadQueue();
+  openDatasetDrawer();
+  pumpUploadQueue();
+}
+
+function pumpUploadQueue() {
+  while (datasetState.activeUploads.size < MAX_PARALLEL_UPLOADS) {
+    const nextUpload = datasetState.uploads.find(item => item.status === 'queued');
+    if (!nextUpload) {
+      break;
+    }
+    startUpload(nextUpload);
+  }
+}
+
+async function startUpload(upload) {
+  upload.status = 'uploading';
+  upload.message = 'Загрузка файла';
+  datasetState.activeUploads.set(upload.id, upload);
+  renderUploadQueue();
+
+  try {
+    const response = await apiUploadDataset({
+      workspaceId: datasetState.workspaceId || DEFAULT_WORKSPACE_ID,
+      file: upload.file,
+      displayName: upload.displayName,
+      datasetId: upload.datasetId,
+      signal: upload.controller.signal,
+      onProgress(progress) {
+        upload.progress = progress;
+        renderUploadQueue();
+      }
+    });
+
+    upload.progress = 100;
+    upload.status = 'profiling';
+    upload.message = 'Профилирование запущено';
+    upload.versionId = response.version?.id || null;
+    renderUploadQueue();
+    await refreshDatasetWorkspace();
+
+    if (upload.versionId) {
+      await monitorVersion(upload.versionId, upload);
+    }
+  } catch (error) {
+    upload.status = error.message === 'Загрузка отменена.' ? 'canceled' : 'error';
+    upload.message = error.message || 'Загрузка завершилась ошибкой';
+    renderUploadQueue();
+  } finally {
+    datasetState.activeUploads.delete(upload.id);
+    renderUploadQueue();
+    pumpUploadQueue();
+  }
+}
+
+async function monitorVersion(versionId, linkedUpload = null) {
+  if (datasetState.activeVersionPolls.has(versionId)) {
+    return;
+  }
+
+  datasetState.activeVersionPolls.add(versionId);
+
+  try {
+    for (let attempt = 0; attempt < 120; attempt++) {
+      await delay(2000);
+      const version = await apiGetDatasetVersion(versionId);
+
+      if (['ready', 'invalid', 'deleted'].includes(version.status)) {
+        if (version.status !== 'deleted') {
+          try {
+            const profile = await apiGetDatasetProfile(versionId);
+            datasetState.profileCache.set(versionId, profile);
+          } catch (_) {
+            // Keep the terminal status visible even if profile polling failed.
+          }
+        }
+
+        if (linkedUpload) {
+          linkedUpload.status = version.status === 'ready' ? 'done' : version.status;
+          linkedUpload.message = describeVersionStatus(version.status);
+          renderUploadQueue();
+        }
+
+        await refreshDatasetWorkspace();
+        return;
+      }
+
+      if (linkedUpload) {
+        linkedUpload.status = 'profiling';
+        linkedUpload.message = 'Профилирование выполняется';
+        renderUploadQueue();
+      }
+    }
+  } catch (_) {
+    if (linkedUpload) {
+      linkedUpload.status = 'error';
+      linkedUpload.message = 'Не удалось получить обновлённый статус профилирования';
+      renderUploadQueue();
+    }
+  } finally {
+    datasetState.activeVersionPolls.delete(versionId);
+  }
+}
+
+async function deleteDatasetVersion(versionId) {
+  try {
+    await apiDeleteDatasetVersion(versionId);
+    datasetState.profileCache.delete(versionId);
+    datasetState.selectedVersionIds = datasetState.selectedVersionIds.filter(id => id !== versionId);
+    persistDatasetSelection();
+    await refreshDatasetWorkspace();
+  } catch (error) {
+    showDatasetWorkspaceError(error.message || 'Не удалось удалить версию файла.');
+  }
+}
+
+function toggleDatasetSelection(versionId, checked) {
+  const next = new Set(datasetState.selectedVersionIds);
+  if (checked) {
+    next.add(versionId);
+  } else {
+    next.delete(versionId);
+  }
+  datasetState.selectedVersionIds = Array.from(next);
+  persistDatasetSelection();
+  renderDatasetWorkspace();
+  renderComposerDatasets();
+}
+
+function removeSelectedDataset(versionId) {
+  datasetState.selectedVersionIds = datasetState.selectedVersionIds.filter(id => id !== versionId);
+  persistDatasetSelection();
+  renderDatasetWorkspace();
+  renderComposerDatasets();
+}
+
+function pruneMissingSelections() {
+  const readyIds = new Set(
+    datasetState.datasets.flatMap(dataset =>
+      (dataset.versions || [])
+        .filter(version => version.status === 'ready')
+        .map(version => version.id)
+    )
+  );
+
+  datasetState.selectedVersionIds = datasetState.selectedVersionIds.filter(id => readyIds.has(id));
+  persistDatasetSelection();
+}
+
+function renderDatasetWorkspaceLoading() {
+  document.getElementById('datasetList').innerHTML = '<div class="dataset-muted">Загрузка списка данных…</div>';
+}
+
+function renderDatasetWorkspaceError(message) {
+  document.getElementById('datasetList').innerHTML = `<div class="dataset-error-banner">${escapeHtml(message)}</div>`;
+}
+
+function showDatasetWorkspaceError(message) {
+  const element = document.getElementById('datasetDrawerError');
+  element.hidden = false;
+  element.textContent = message;
+}
+
+function hideDatasetWorkspaceError() {
+  const element = document.getElementById('datasetDrawerError');
+  element.hidden = true;
+  element.textContent = '';
+}
+
+function renderDatasetWorkspace() {
+  renderUploadQueue();
+
+  const totalDatasets = datasetState.datasets.length;
+  const selectedCount = datasetState.selectedVersionIds.length;
+  document.getElementById('datasetWorkspaceSummary').textContent =
+    `${totalDatasets} ${pluralize(totalDatasets, 'набор', 'набора', 'наборов')}`;
+  document.getElementById('datasetLauncherCount').textContent = String(selectedCount);
+
+  const list = document.getElementById('datasetList');
+  if (!datasetState.datasets.length) {
+    list.innerHTML = `
+      <div class="dataset-card">
+        <div class="dataset-muted">
+          В workspace пока нет загруженных файлов. Добавьте CSV, JSON или XLSX, затем выберите ready-версию для анализа.
+        </div>
+      </div>
+    `;
+    return;
+  }
+
+  list.innerHTML = datasetState.datasets.map(dataset => renderDatasetCard(dataset)).join('');
+}
+
+function renderUploadQueue() {
+  const element = document.getElementById('uploadList');
+  const total = datasetState.uploads.length;
+  document.getElementById('uploadQueueSummary').textContent =
+    `${total} ${pluralize(total, 'файл', 'файла', 'файлов')}`;
+
+  if (!total) {
+    element.innerHTML = '<div class="dataset-muted">Загрузки появятся здесь после выбора файлов.</div>';
+    return;
+  }
+
+  element.innerHTML = datasetState.uploads.map(upload => `
+    <div class="upload-card">
+      <div class="upload-head">
+        <div>
+          <div class="upload-name">${escapeHtml(upload.file.name)}</div>
+          <div class="upload-meta">${escapeHtml(upload.displayName || stemFilename(upload.file.name))} · ${escapeHtml(formatBytes(upload.file.size))}</div>
+        </div>
+        <div class="dataset-card-actions">
+          ${['queued', 'uploading', 'profiling'].includes(upload.status) ? `
+            <button class="dataset-btn" type="button" onclick="cancelDatasetUpload('${escapeAttribute(upload.id)}')">Отменить</button>
+          ` : ''}
+        </div>
+      </div>
+      <div class="upload-progress">
+        <div class="upload-progress-bar" style="width:${upload.progress}%"></div>
+      </div>
+      <div class="upload-status ${escapeAttribute(upload.status)}">${escapeHtml(upload.message || describeUploadStatus(upload.status))}</div>
+    </div>
+  `).join('');
+}
+
+function cancelDatasetUpload(uploadId) {
+  const upload = datasetState.uploads.find(item => item.id === uploadId);
+  if (!upload) {
+    return;
+  }
+
+  if (['queued', 'uploading', 'profiling'].includes(upload.status)) {
+    upload.controller.abort();
+    upload.status = 'canceled';
+    upload.message = 'Загрузка отменена';
+    renderUploadQueue();
+  }
+}
+
+function renderDatasetCard(dataset) {
+  const versions = Array.isArray(dataset.versions) ? dataset.versions : [];
+
+  return `
+    <article class="dataset-card">
+      <div class="dataset-card-head">
+        <div>
+          <div class="dataset-card-title">${escapeHtml(dataset.display_name || 'Dataset')}</div>
+          <div class="dataset-card-meta">${versions.length} ${pluralize(versions.length, 'версия', 'версии', 'версий')} · ${escapeHtml(dataset.source_type || 'upload')}</div>
+        </div>
+        <div class="dataset-card-actions">
+          <button class="dataset-btn" type="button" onclick="openDatasetFilePicker('${escapeAttribute(dataset.id)}', '${escapeAttribute(dataset.display_name || '')}')">
+            Новая версия
+          </button>
+        </div>
+      </div>
+      <div class="dataset-card-body">
+        ${versions.map(version => renderDatasetVersion(dataset, version)).join('')}
+      </div>
+    </article>
+  `;
+}
+
+function renderDatasetVersion(dataset, version) {
+  const profile = datasetState.profileCache.get(version.id);
+  const checked = datasetState.selectedVersionIds.includes(version.id);
+  const canSelect = version.status === 'ready';
+  const issues = Array.isArray(profile?.issues) ? profile.issues : [];
+
+  return `
+    <div class="version-row">
+      <div class="version-row-head">
+        <label class="version-select">
+          <input
+            type="checkbox"
+            ${checked ? 'checked' : ''}
+            ${canSelect ? '' : 'disabled'}
+            onchange="toggleDatasetSelection('${escapeAttribute(version.id)}', this.checked)"
+          >
+          <div class="version-copy">
+            <div class="version-title">${escapeHtml(version.original_filename || dataset.display_name || 'Файл')}</div>
+            <div class="version-meta">${escapeHtml((version.format || 'unknown').toUpperCase())} · ${escapeHtml(formatBytes(version.size_bytes || 0))} · ${escapeHtml(formatVersionStatusLabel(version.status))}</div>
+          </div>
+        </label>
+        <div class="version-actions">
+          <span class="dataset-status ${escapeAttribute(version.status)}">${escapeHtml(formatVersionStatusLabel(version.status))}</span>
+          <button class="dataset-btn danger" type="button" onclick="deleteDatasetVersion('${escapeAttribute(version.id)}')">Удалить</button>
+        </div>
+      </div>
+      ${renderVersionProfile(profile, version)}
+      ${issues.length ? `
+        <div class="version-issues" style="margin-top:10px;">
+          ${issues.map(issue => `<span class="issue-chip ${escapeAttribute(issue.severity || 'error')}" title="${escapeAttribute(issue.message || '')}">${escapeHtml(describeDatasetIssue(issue))}</span>`).join('')}
+        </div>
+      ` : ''}
+    </div>
+  `;
+}
+
+function renderVersionProfile(profile, version) {
+  if (!profile) {
+    if (version.status === 'profiling') {
+      return '<div class="dataset-muted" style="margin-top:10px;">Профиль строится. Версия станет доступной для выбора после статуса ready.</div>';
+    }
+    return '';
+  }
+
+  const sheets = Array.isArray(profile.profile?.sheets) ? profile.profile.sheets : [];
+  const warnings = Array.isArray(profile.profile?.warnings) ? profile.profile.warnings : [];
+  const allWarnings = [
+    ...warnings,
+    ...sheets.flatMap(sheet => Array.isArray(sheet.warnings) ? sheet.warnings : [])
+  ];
+
+  return `
+    <div style="margin-top:12px;">
+      ${sheets.length ? `
+        <div class="profile-sheet-list">
+          ${sheets.map(sheet => `
+            <div class="version-sheet">
+              <strong>${escapeHtml(sheet.name || '__root__')}</strong>
+              <div class="version-sheet-meta">
+                ${escapeHtml(`${sheet.row_count || 0} ${pluralize(sheet.row_count || 0, 'строка', 'строки', 'строк')}`)}
+                · ${escapeHtml(`${(sheet.columns || []).length} ${pluralize((sheet.columns || []).length, 'колонка', 'колонки', 'колонок')}`)}
+                ${sheet.sampled ? ' · sampled' : ''}
+              </div>
+              ${(sheet.columns || []).length ? `
+                <div class="version-chip-row" style="margin-top:8px;">
+                  ${(sheet.columns || []).slice(0, 6).map(column => `<span class="version-chip">${escapeHtml(column.name)}</span>`).join('')}
+                </div>
+              ` : ''}
+            </div>
+          `).join('')}
+        </div>
+      ` : ''}
+      ${allWarnings.length ? `
+        <div class="version-issues" style="margin-top:10px;">
+          ${allWarnings.map(warning => `<span class="issue-chip warning">${escapeHtml(warning)}</span>`).join('')}
+        </div>
+      ` : ''}
+    </div>
+  `;
+}
+
+function renderComposerDatasets() {
+  const container = document.getElementById('composerDatasets');
+  if (!container) {
+    return;
+  }
+
+  const selectedVersions = getSelectedVersions();
+  if (!selectedVersions.length) {
+    container.innerHTML = `
+      <div class="composer-empty-datasets">
+        Файлы не выбраны. <button class="dataset-inline-link" type="button" onclick="openDatasetDrawer()">Добавить данные</button>
+      </div>
+    `;
+    return;
+  }
+
+  container.innerHTML = selectedVersions.map(item => `
+    <span class="composer-file-chip">
+      ${escapeHtml(item.dataset.display_name)} · ${escapeHtml(item.version.original_filename)}
+      <button type="button" aria-label="Убрать файл" onclick="removeSelectedDataset('${escapeAttribute(item.version.id)}')">×</button>
+    </span>
+  `).join('');
+}
+
+function getSelectedVersions() {
+  const selected = [];
+
+  datasetState.datasets.forEach(dataset => {
+    (dataset.versions || []).forEach(version => {
+      if (datasetState.selectedVersionIds.includes(version.id) && version.status === 'ready') {
+        selected.push({dataset, version});
+      }
+    });
+  });
+
+  return selected;
+}
+
+function describeUploadStatus(status) {
+  switch (status) {
+    case 'queued':
+      return 'Ожидает свободный слот';
+    case 'uploading':
+      return 'Загрузка файла';
+    case 'profiling':
+      return 'Профилирование выполняется';
+    case 'done':
+      return 'Готово';
+    case 'invalid':
+      return 'Файл не прошёл профилирование';
+    case 'canceled':
+      return 'Загрузка отменена';
+    default:
+      return 'Ошибка загрузки';
+  }
+}
+
+function describeVersionStatus(status) {
+  switch (status) {
+    case 'ready':
+      return 'Файл готов к анализу';
+    case 'invalid':
+      return 'Файл не прошёл проверку';
+    case 'deleted':
+      return 'Версия удалена';
+    default:
+      return 'Профилирование выполняется';
+  }
+}
+
+function describeDatasetIssue(issue) {
+  const code = String(issue?.code || '').toLowerCase();
+  switch (code) {
+    case 'dataset_has_no_rows':
+      return 'В файле нет строк данных';
+    case 'dataset_has_no_object_rows':
+      return 'JSON не содержит объектных записей';
+    case 'dataset_has_no_sheets':
+      return 'В XLSX нет заполненных листов';
+    case 'profile_runtime_error':
+      return 'Профилирование завершилось ошибкой';
+    default:
+      return issue?.message || issue?.code || 'Ошибка профиля';
+  }
+}
+
+function formatVersionStatusLabel(status) {
+  switch (status) {
+    case 'receiving':
+      return 'receiving';
+    case 'uploaded':
+      return 'uploaded';
+    case 'profiling':
+      return 'profiling';
+    case 'ready':
+      return 'ready';
+    case 'invalid':
+      return 'invalid';
+    case 'deleted':
+      return 'deleted';
+    default:
+      return status || 'unknown';
+  }
+}
+
+function stemFilename(name) {
+  return String(name || 'dataset').replace(/\.[^.]+$/, '') || 'dataset';
+}
+
+function formatBytes(value) {
+  const bytes = Number(value || 0);
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function parseUploadError(xhr) {
+  const detail = xhr.response?.detail || safeParseJson(xhr.responseText)?.detail;
+  if (xhr.status === 413) {
+    return 'Файл превышает допустимый размер загрузки.';
+  }
+  if (xhr.status === 415) {
+    return 'Поддерживаются только файлы .csv, .json и .xlsx.';
+  }
+  if (xhr.status === 400 && typeof detail === 'string' && detail.toLowerCase().includes('empty')) {
+    return 'Файл пустой. Нужны данные хотя бы с одной строкой.';
+  }
+  if (xhr.status === 404) {
+    return 'Workspace или версия набора не найдены.';
+  }
+  return typeof detail === 'string' && detail ? detail : `Не удалось загрузить файл (${xhr.status})`;
+}
+
+async function safeJsonDetail(response) {
+  try {
+    const payload = await response.json();
+    return payload?.detail || '';
+  } catch (_) {
+    return '';
+  }
+}
+
+function safeParseJson(value) {
+  try {
+    return JSON.parse(value);
+  } catch (_) {
+    return null;
+  }
+}
+
+/* =========================================================
    UI helpers
    ========================================================= */
 
@@ -3287,6 +4537,30 @@ document.getElementById('questionInput').addEventListener('keydown', event => {
   }
 });
 
+document.getElementById('datasetFileInput').addEventListener('change', handleDatasetInputChange);
+
+const datasetDropzone = document.getElementById('datasetDropzone');
+['dragenter', 'dragover'].forEach(eventName => {
+  datasetDropzone.addEventListener(eventName, event => {
+    event.preventDefault();
+    datasetDropzone.classList.add('dragover');
+  });
+});
+
+['dragleave', 'dragend', 'drop'].forEach(eventName => {
+  datasetDropzone.addEventListener(eventName, event => {
+    event.preventDefault();
+    datasetDropzone.classList.remove('dragover');
+  });
+});
+
+datasetDropzone.addEventListener('drop', event => {
+  const files = Array.from(event.dataTransfer?.files || []);
+  if (files.length) {
+    queueDatasetUploads(files);
+  }
+});
+
 document.addEventListener('keydown', event => {
   if (
     event.key.toLowerCase() === 'n' &&
@@ -3299,9 +4573,15 @@ document.addEventListener('keydown', event => {
   }
 
   if (event.key === 'Escape') {
+    closeDatasetDrawer();
     toggleSidebar(false);
   }
 });
+
+renderComposerDatasets();
+renderUploadQueue();
+autoResizeInput();
+initDatasetWorkspace();
 </script>
 </body>
 </html>

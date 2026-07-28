@@ -31,7 +31,14 @@ from agent.planner import plan as generate_plan
 from agent.router import route_sync
 from agent.schemas import AnalysisPlan
 from api.datasets import build_datasets_router
-from application.datasets.service import DatasetService
+from application.datasets.service import (
+    DatasetNotFoundError,
+    DatasetService,
+    DatasetServiceError,
+    DatasetVersionNotFoundError,
+    InvalidDatasetStateError,
+    WorkspaceNotFoundError,
+)
 from infrastructure.jobs.in_process_dispatcher import InProcessDatasetJobDispatcher
 from infrastructure.persistence.sqlite_datasets import SqliteDatasetRepository
 from infrastructure.storage.local_files import LocalRawFileStorage
@@ -134,6 +141,7 @@ def _validate_analysis_id(analysis_id: str) -> None:
 
 class CreateAnalysisRequest(BaseModel):
     question: str = Field(..., description="Manager question")
+    dataset_version_ids: list[str] = Field(default_factory=list)
 
 
 class ReviseRequest(BaseModel):
@@ -145,6 +153,7 @@ class AnalysisResponse(BaseModel):
     question: str
     skill: Optional[str] = None
     status: str
+    dataset_version_ids: list[str] = Field(default_factory=list)
     plan: Optional[dict] = None
     result: Optional[dict] = None
     created_at: str
@@ -223,6 +232,7 @@ def create_analysis(
     analysis_id = str(uuid.uuid4())
     routing = route_sync(req.question)
     plan = generate_plan(req.question, routing=routing)
+    dataset_service = app.state.dataset_service_factory()
 
     conn = _get_analyses_conn()
     try:
@@ -237,6 +247,22 @@ def create_analysis(
             ),
         )
         conn.commit()
+        try:
+            dataset_service.attach_versions_to_analysis(
+                analysis_id,
+                req.dataset_version_ids,
+            )
+        except Exception as exc:
+            conn.execute("DELETE FROM analyses WHERE id = ?", (analysis_id,))
+            conn.commit()
+            if isinstance(
+                exc,
+                (DatasetVersionNotFoundError, DatasetNotFoundError, WorkspaceNotFoundError),
+            ):
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+            if isinstance(exc, (InvalidDatasetStateError, DatasetServiceError)):
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            raise
         row = conn.execute("SELECT * FROM analyses WHERE id = ?", (analysis_id,)).fetchone()
     finally:
         conn.close()
@@ -455,12 +481,17 @@ def _execute_analysis_background(analysis_id: str) -> None:
 
 
 def _row_to_response(row=None, analysis_id=None, status=None):
+    dataset_version_ids = _get_analysis_dataset_version_ids(
+        analysis_id or (row["id"] if row is not None else None)
+    )
+
     if row is None and analysis_id:
         return AnalysisResponse(
             id=analysis_id,
             question="",
             skill=None,
             status=status or "unknown",
+            dataset_version_ids=dataset_version_ids,
             plan=None,
             result=None,
             created_at="",
@@ -475,11 +506,21 @@ def _row_to_response(row=None, analysis_id=None, status=None):
         question=row["question"],
         skill=row["skill"],
         status=row["status"],
+        dataset_version_ids=dataset_version_ids,
         plan=plan,
         result=result,
         created_at=str(row["created_at"]) if row["created_at"] else "",
         updated_at=str(row["updated_at"]) if row["updated_at"] else "",
     )
+
+
+def _get_analysis_dataset_version_ids(analysis_id: str | None) -> list[str]:
+    if not analysis_id:
+        return []
+
+    repository = app.state.dataset_repository_factory()
+    selections = repository.list_analysis_dataset_selections(analysis_id)
+    return [selection.dataset_version_id for selection in selections]
 
 
 if __name__ == "__main__":

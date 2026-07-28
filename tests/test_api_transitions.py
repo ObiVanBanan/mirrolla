@@ -1,29 +1,41 @@
 import os
 import tempfile
+import time
 import unittest
+from datetime import UTC, datetime
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
 from agent.schemas import AnalysisPlan, PeriodSpec, SkillType
 from api import main as api_main
+from application.datasets.models import Dataset, DatasetVersion
 
 
 class ApiTransitionTests(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()
         self.original_db = api_main.ANALYSES_DB
+        self.original_datasets_db = api_main.DATASETS_DB
+        self.original_uploads_root = api_main.UPLOADS_ROOT
         self.original_initialized = api_main._db_initialized
         api_main.ANALYSES_DB = os.path.join(self.tmpdir.name, "analyses.sqlite")
+        api_main.DATASETS_DB = os.path.join(self.tmpdir.name, "datasets.sqlite")
+        api_main.UPLOADS_ROOT = os.path.join(self.tmpdir.name, "uploads")
         api_main._db_initialized = False
         api_main._rate_log.clear()
+        api_main._poll_rate_log.clear()
         self.client = TestClient(api_main.app)
+        self.client.__enter__()
 
     def tearDown(self):
-        self.client.close()
+        self.client.__exit__(None, None, None)
         api_main.ANALYSES_DB = self.original_db
+        api_main.DATASETS_DB = self.original_datasets_db
+        api_main.UPLOADS_ROOT = self.original_uploads_root
         api_main._db_initialized = self.original_initialized
         api_main._rate_log.clear()
+        api_main._poll_rate_log.clear()
         self.tmpdir.cleanup()
 
     def _plan(self, question: str) -> AnalysisPlan:
@@ -82,6 +94,95 @@ class ApiTransitionTests(unittest.TestCase):
         rejected = self.client.post(f"/api/v1/analyses/{analysis_id}/reject")
         self.assertEqual(rejected.status_code, 200)
         self.assertEqual(rejected.json()["status"], "rejected")
+
+    @patch("api.main.generate_plan")
+    @patch("api.main.route_sync")
+    def test_create_persists_selected_dataset_version_ids(self, route_sync, generate_plan):
+        route_sync.return_value = type("Routing", (), {
+            "skill": SkillType.SALES_DECLINE,
+            "product_codes": [],
+            "period_days": 14,
+        })()
+        generate_plan.side_effect = lambda question, routing=None: self._plan(question)
+
+        upload = self.client.post(
+            "/api/v1/workspaces/default/datasets",
+            files={"file": ("sales.csv", b"date,sales\n2026-07-01,10\n", "text/csv")},
+            data={"display_name": "Sales"},
+        )
+        self.assertEqual(upload.status_code, 200)
+        version_id = upload.json()["version"]["id"]
+
+        deadline = time.time() + 3.0
+        while time.time() < deadline:
+            current = self.client.get(f"/api/v1/dataset-versions/{version_id}")
+            self.assertEqual(current.status_code, 200)
+            if current.json()["status"] == "ready":
+                break
+            time.sleep(0.05)
+        else:
+            self.fail("Dataset version did not become ready")
+
+        created = self.client.post(
+            "/api/v1/analyses",
+            json={
+                "question": "Почему упали продажи?",
+                "dataset_version_ids": [version_id],
+            },
+        )
+
+        self.assertEqual(created.status_code, 200)
+        payload = created.json()
+        self.assertEqual(payload["dataset_version_ids"], [version_id])
+
+        fetched = self.client.get(f"/api/v1/analyses/{payload['id']}")
+        self.assertEqual(fetched.status_code, 200)
+        self.assertEqual(fetched.json()["dataset_version_ids"], [version_id])
+
+    @patch("api.main.generate_plan")
+    @patch("api.main.route_sync")
+    def test_create_rejects_non_ready_dataset_version_selection(self, route_sync, generate_plan):
+        route_sync.return_value = type("Routing", (), {
+            "skill": SkillType.SALES_DECLINE,
+            "product_codes": [],
+            "period_days": 14,
+        })()
+        generate_plan.side_effect = lambda question, routing=None: self._plan(question)
+
+        repository = self.client.app.state.dataset_repository_factory()
+        now = datetime.now(UTC)
+        dataset = repository.save_dataset(
+            Dataset(
+                id="dataset_pending",
+                workspace_id="default",
+                display_name="Sales",
+                source_type="upload",
+                created_at=now,
+            )
+        )
+        version_id = repository.save_dataset_version(
+            DatasetVersion(
+                id="version_pending",
+                dataset_id=dataset.id,
+                original_filename="sales.csv",
+                storage_key="default/.blobs/pending",
+                format="csv",
+                size_bytes=24,
+                checksum_sha256="abc123",
+                status="uploaded",
+                created_at=now,
+            )
+        ).id
+
+        created = self.client.post(
+            "/api/v1/analyses",
+            json={
+                "question": "Почему упали продажи?",
+                "dataset_version_ids": [version_id],
+            },
+        )
+
+        self.assertEqual(created.status_code, 409)
 
 
 if __name__ == "__main__":
