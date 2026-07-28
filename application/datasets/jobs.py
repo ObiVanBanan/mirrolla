@@ -62,9 +62,24 @@ def run_dataset_profile_job(
 
     result = profiler(version, storage)
     service = DatasetService(repository, _NoopDatasetJobDispatcher())
-    return service.complete_profile(
+    if result.success:
+        return service.complete_profile(
+            job.version_id,
+            profile=result.profile,
+            issues=result.issues,
+            success=True,
+        )
+
+    primary_issue = result.issues[0] if result.issues else None
+    if primary_issue is None:
+        return service.fail_profile(
+            job.version_id,
+            code="profile_runtime_error",
+            message="Dataset profiling failed unexpectedly",
+        )
+
+    return service.fail_profile(
         job.version_id,
-        profile=result.profile,
-        issues=result.issues,
-        success=result.success,
+        code=primary_issue.code,
+        message=primary_issue.message,
     )

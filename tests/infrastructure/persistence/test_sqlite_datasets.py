@@ -4,7 +4,13 @@ import tempfile
 import unittest
 import sqlite3
 
-from application.datasets.models import AnalysisDatasetSelection, DatasetIssue, DatasetProfile
+from application.datasets.models import (
+    AnalysisDatasetSelection,
+    DatasetColumnProfile,
+    DatasetIssue,
+    DatasetProfile,
+    DatasetSheetProfile,
+)
 from application.datasets.service import DatasetService
 from infrastructure.persistence.sqlite_datasets import (
     ImmutableDatasetError,
@@ -83,7 +89,7 @@ class SqliteDatasetRepositoryTests(unittest.TestCase):
         self.service.start_profiling(version.id)
         self.service.complete_profile(
             version.id,
-            profile=DatasetProfile(format="csv", row_count=10, columns=["date"]),
+            profile=_profile("date"),
             issues=[DatasetIssue(code="warn", message="warning", severity="warning")],
             success=True,
         )
@@ -117,7 +123,7 @@ class SqliteDatasetRepositoryTests(unittest.TestCase):
             self.service.start_profiling(version.id)
             self.service.complete_profile(
                 version.id,
-                profile=DatasetProfile(format="csv", row_count=10, columns=["date"]),
+                profile=_profile("date"),
                 issues=[],
                 success=True,
             )
@@ -240,7 +246,7 @@ class SqliteDatasetRepositoryTests(unittest.TestCase):
         self.service.start_profiling(version.id)
         self.service.complete_profile(
             version.id,
-            profile=DatasetProfile(format="csv", row_count=10, columns=["date"]),
+            profile=_profile("date"),
             issues=[],
             success=True,
         )
@@ -340,3 +346,25 @@ class SqliteDatasetRepositoryTests(unittest.TestCase):
 
         self.assertEqual(user_version, SqliteDatasetRepository.SCHEMA_VERSION)
         self.assertTrue(any("sqlite_autoindex_analysis_datasets_2" in row[1] for row in indexes))
+
+
+def _profile(*columns: str) -> DatasetProfile:
+    return DatasetProfile(
+        format="csv",
+        sheets=[
+            DatasetSheetProfile(
+                name="__root__",
+                row_count=10,
+                columns=[
+                    DatasetColumnProfile(
+                        name=column,
+                        inferred_type="string",
+                        null_ratio=0.0,
+                        unique_count=10,
+                        examples=[column],
+                    )
+                    for column in columns
+                ],
+            )
+        ],
+    )

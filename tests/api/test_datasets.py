@@ -7,7 +7,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from api import main as api_main
-from application.datasets.models import DatasetIssue, DatasetProfile
+from application.datasets.models import DatasetColumnProfile, DatasetIssue, DatasetProfile, DatasetSheetProfile
 from application.datasets.service import DatasetService
 
 
@@ -35,9 +35,10 @@ class DatasetApiTests(unittest.TestCase):
         api_main.ANALYSES_DB = os.path.join(self.tmpdir.name, "analyses.sqlite")
         api_main.DATASETS_DB = os.path.join(self.tmpdir.name, "datasets.sqlite")
         api_main.UPLOADS_ROOT = os.path.join(self.tmpdir.name, "uploads")
-        api_main.MAX_UPLOAD_BYTES = 4
+        api_main.MAX_UPLOAD_BYTES = 64
         api_main._db_initialized = False
-        api_main._rate_log.clear()
+        api_main._mutation_rate_log.clear()
+        api_main._poll_rate_log.clear()
         self.client = TestClient(api_main.app)
         self.client.__enter__()
 
@@ -48,7 +49,8 @@ class DatasetApiTests(unittest.TestCase):
         api_main.UPLOADS_ROOT = self.original_uploads_root
         api_main.MAX_UPLOAD_BYTES = self.original_max_upload_bytes
         api_main._db_initialized = self.original_initialized
-        api_main._rate_log.clear()
+        api_main._mutation_rate_log.clear()
+        api_main._poll_rate_log.clear()
         self.tmpdir.cleanup()
 
     def test_get_default_workspace(self):
@@ -60,7 +62,7 @@ class DatasetApiTests(unittest.TestCase):
     def test_upload_dataset_success(self):
         response = self.client.post(
             "/api/v1/workspaces/default/datasets",
-            files={"file": ("sales.csv", b"abcd", "text/csv")},
+            files={"file": ("sales.csv", b"date,sales\n2026-07-01,10\n", "text/csv")},
             data={"display_name": "Sales"},
         )
 
@@ -68,7 +70,7 @@ class DatasetApiTests(unittest.TestCase):
         payload = response.json()
         self.assertEqual(payload["dataset"]["display_name"], "Sales")
         self.assertEqual(payload["version"]["status"], "profiling")
-        self.assertEqual(payload["version"]["size_bytes"], 4)
+        self.assertEqual(payload["version"]["size_bytes"], len(b"date,sales\n2026-07-01,10\n"))
         self.assertNotIn("storage_key", payload["version"])
 
         ready = self._wait_for_version_status(payload["version"]["id"], {"ready"})
@@ -77,7 +79,7 @@ class DatasetApiTests(unittest.TestCase):
     def test_list_datasets_after_successful_upload(self):
         upload = self.client.post(
             "/api/v1/workspaces/default/datasets",
-            files={"file": ("sales.csv", b"abcd", "text/csv")},
+            files={"file": ("sales.csv", b"date,sales\n2026-07-01,10\n", "text/csv")},
             data={"display_name": "Sales"},
         )
 
@@ -96,7 +98,7 @@ class DatasetApiTests(unittest.TestCase):
     def test_upload_rejects_unsupported_type(self):
         response = self.client.post(
             "/api/v1/workspaces/default/datasets",
-            files={"file": ("sales.xls", b"abcd", "application/octet-stream")},
+            files={"file": ("sales.xls", b"date,sales\n2026-07-01,10\n", "application/octet-stream")},
         )
 
         self.assertEqual(response.status_code, 415)
@@ -108,7 +110,13 @@ class DatasetApiTests(unittest.TestCase):
     def test_upload_rejects_oversize(self):
         response = self.client.post(
             "/api/v1/workspaces/default/datasets",
-            files={"file": ("sales.csv", b"abcde", "text/csv")},
+            files={
+                "file": (
+                    "sales.csv",
+                    b"date,sales\n2026-07-01,10\n2026-07-02,11\n2026-07-03,12\n2026-07-04,13\n",
+                    "text/csv",
+                )
+            },
         )
 
         self.assertEqual(response.status_code, 413)
@@ -133,7 +141,7 @@ class DatasetApiTests(unittest.TestCase):
     def test_get_profile_returns_issues(self):
         upload = self.client.post(
             "/api/v1/workspaces/default/datasets",
-            files={"file": ("sales.csv", b"abcd", "text/csv")},
+            files={"file": ("sales.csv", b"date,sales\n2026-07-01,10\n", "text/csv")},
         )
         self.assertEqual(upload.status_code, 200)
         version_id = upload.json()["version"]["id"]
@@ -143,7 +151,24 @@ class DatasetApiTests(unittest.TestCase):
         self.assertIsNotNone(version)
         assert version is not None
         version.status = "invalid"
-        version.profile = DatasetProfile(format="csv", row_count=0, columns=[])
+        version.profile = DatasetProfile(
+            format="csv",
+            sheets=[
+                DatasetSheetProfile(
+                    name="__root__",
+                    row_count=0,
+                    columns=[
+                        DatasetColumnProfile(
+                            name="date",
+                            inferred_type="string",
+                            null_ratio=1.0,
+                            unique_count=0,
+                            examples=[],
+                        )
+                    ],
+                )
+            ],
+        )
         version.issues = [DatasetIssue(code="bad-header", message="Missing header", severity="error")]
         repository.save_dataset_version(version)
 
@@ -166,7 +191,7 @@ class DatasetApiTests(unittest.TestCase):
         try:
             response = self.client.post(
                 "/api/v1/workspaces/default/datasets",
-                files={"file": ("sales.csv", b"abcd", "text/csv")},
+                files={"file": ("sales.csv", b"date,sales\n2026-07-01,10\n", "text/csv")},
             )
         finally:
             self.client.app.state.dataset_service_factory = original_factory
@@ -186,7 +211,7 @@ class DatasetApiTests(unittest.TestCase):
             f"--{boundary}\r\n"
             'Content-Disposition: form-data; name="file"; filename="C:\\\\secret.csv"\r\n'
             "Content-Type: text/csv\r\n\r\n"
-        ).encode("utf-8") + b"abcd\r\n" + f"--{boundary}--\r\n".encode("utf-8")
+        ).encode("utf-8") + b"date,sales\n2026-07-01,10\n\r\n" + f"--{boundary}--\r\n".encode("utf-8")
         response = self.client.post(
             "/api/v1/workspaces/default/datasets",
             content=body,
@@ -197,6 +222,21 @@ class DatasetApiTests(unittest.TestCase):
         payload = response.json()
         self.assertEqual(payload["version"]["original_filename"], "secret.csv")
         self.assertNotIn("\\", payload["version"]["original_filename"])
+
+    def test_profile_polling_is_not_limited_by_mutation_threshold(self):
+        upload = self.client.post(
+            "/api/v1/workspaces/default/datasets",
+            files={"file": ("sales.csv", b"date,sales\n2026-07-01,10\n", "text/csv")},
+        )
+        self.assertEqual(upload.status_code, 200)
+        version_id = upload.json()["version"]["id"]
+
+        last_response = None
+        for _ in range(20):
+            last_response = self.client.get(f"/api/v1/dataset-versions/{version_id}/profile")
+        self.assertIsNotNone(last_response)
+        assert last_response is not None
+        self.assertNotEqual(last_response.status_code, 429)
 
     def _wait_for_version_status(self, version_id: str, expected_statuses: set[str], timeout: float = 3.0):
         deadline = time.time() + timeout

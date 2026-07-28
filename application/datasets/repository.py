@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import BinaryIO, Protocol
 
@@ -9,6 +9,7 @@ from application.datasets.models import (
     Dataset,
     DataWorkspace,
     DatasetVersion,
+    DatasetVersionStatus,
 )
 
 
@@ -33,6 +34,10 @@ class DatasetRepository(Protocol):
     def get_dataset_version(self, version_id: str) -> DatasetVersion | None: ...
     def save_dataset_version(self, version: DatasetVersion) -> DatasetVersion: ...
     def list_dataset_versions(self, dataset_id: str) -> list[DatasetVersion]: ...
+    def list_dataset_versions_by_status(
+        self,
+        statuses: Sequence[DatasetVersionStatus],
+    ) -> list[DatasetVersion]: ...
     def find_dataset_version_by_checksum(
         self,
         workspace_id: str,

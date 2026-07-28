@@ -25,7 +25,7 @@ from infrastructure.storage.local_files import (
 logger = logging.getLogger(__name__)
 
 
-def build_datasets_router(*, verify_api_key, check_rate_limit):
+def build_datasets_router(*, verify_api_key, check_mutation_rate_limit, check_poll_rate_limit):
     router = APIRouter(prefix="/api/v1", tags=["datasets"])
 
     class WorkspaceResponse(BaseModel):
@@ -136,7 +136,7 @@ def build_datasets_router(*, verify_api_key, check_rate_limit):
         request: Request,
         _: None = Depends(verify_api_key),
     ):
-        check_rate_limit(request.client.host if request.client else "unknown")
+        check_poll_rate_limit(request.client.host if request.client else "unknown")
         workspace = _dataset_service(request).ensure_default_workspace()
         return _workspace_response(workspace)
 
@@ -146,7 +146,7 @@ def build_datasets_router(*, verify_api_key, check_rate_limit):
         request: Request,
         _: None = Depends(verify_api_key),
     ):
-        check_rate_limit(request.client.host if request.client else "unknown")
+        check_poll_rate_limit(request.client.host if request.client else "unknown")
         repository = _dataset_repository(request)
         workspace = repository.get_workspace(workspace_id)
         if workspace is None:
@@ -170,7 +170,7 @@ def build_datasets_router(*, verify_api_key, check_rate_limit):
         dataset_id: str | None = Form(default=None),
         _: None = Depends(verify_api_key),
     ):
-        check_rate_limit(request.client.host if request.client else "unknown")
+        check_mutation_rate_limit(request.client.host if request.client else "unknown")
         service = _dataset_service(request)
         repository = _dataset_repository(request)
         storage = _raw_file_storage(request)
@@ -235,7 +235,7 @@ def build_datasets_router(*, verify_api_key, check_rate_limit):
         request: Request,
         _: None = Depends(verify_api_key),
     ):
-        check_rate_limit(request.client.host if request.client else "unknown")
+        check_poll_rate_limit(request.client.host if request.client else "unknown")
         version = _dataset_repository(request).get_dataset_version(version_id)
         if version is None:
             raise HTTPException(status_code=404, detail=f"Dataset version {version_id} was not found")
@@ -247,7 +247,7 @@ def build_datasets_router(*, verify_api_key, check_rate_limit):
         request: Request,
         _: None = Depends(verify_api_key),
     ):
-        check_rate_limit(request.client.host if request.client else "unknown")
+        check_poll_rate_limit(request.client.host if request.client else "unknown")
         version = _dataset_repository(request).get_dataset_version(version_id)
         if version is None:
             raise HTTPException(status_code=404, detail=f"Dataset version {version_id} was not found")
@@ -264,7 +264,7 @@ def build_datasets_router(*, verify_api_key, check_rate_limit):
         request: Request,
         _: None = Depends(verify_api_key),
     ):
-        check_rate_limit(request.client.host if request.client else "unknown")
+        check_mutation_rate_limit(request.client.host if request.client else "unknown")
         try:
             deleted = _dataset_service(request).soft_delete_version(version_id)
             return DeleteDatasetVersionResponse(version=_version_response(deleted))

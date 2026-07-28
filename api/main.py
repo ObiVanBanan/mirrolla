@@ -27,9 +27,7 @@ if PROJECT_ROOT not in sys.path:
 
 load_dotenv()
 
-from agent.executor import execute as execute_plan
 from agent.planner import plan as generate_plan
-from agent.reporter import synthesize as reporter_synthesize  # noqa: F401
 from agent.router import route_sync
 from agent.schemas import AnalysisPlan
 from api.datasets import build_datasets_router
@@ -50,9 +48,13 @@ CORS_ORIGINS = os.getenv("CORS_ORIGINS", "").strip()
 CORS_ORIGINS_LIST = [o.strip() for o in CORS_ORIGINS.split(",") if o.strip()] if CORS_ORIGINS else ["*"]
 
 _db_initialized = False
-_rate_log: dict[str, list[float]] = defaultdict(list)
-RATE_LIMIT_WINDOW = 60
-RATE_LIMIT_MAX = 10
+_mutation_rate_log: dict[str, list[float]] = defaultdict(list)
+_poll_rate_log: dict[str, list[float]] = defaultdict(list)
+MUTATION_RATE_LIMIT_WINDOW = 60
+MUTATION_RATE_LIMIT_MAX = 10
+POLL_RATE_LIMIT_WINDOW = 60
+POLL_RATE_LIMIT_MAX = 120
+_rate_log = _mutation_rate_log
 
 
 def _get_analyses_conn():
@@ -85,16 +87,39 @@ def _init_analyses_db(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def _check_rate_limit(client_ip: str) -> None:
+def _check_mutation_rate_limit(client_ip: str) -> None:
     now = time.time()
-    timestamps = _rate_log[client_ip]
-    _rate_log[client_ip] = [t for t in timestamps if now - t < RATE_LIMIT_WINDOW]
-    if len(_rate_log[client_ip]) >= RATE_LIMIT_MAX:
+    timestamps = _mutation_rate_log[client_ip]
+    _mutation_rate_log[client_ip] = [
+        timestamp
+        for timestamp in timestamps
+        if now - timestamp < MUTATION_RATE_LIMIT_WINDOW
+    ]
+    if len(_mutation_rate_log[client_ip]) >= MUTATION_RATE_LIMIT_MAX:
         raise HTTPException(
             status_code=429,
-            detail=f"Too many requests. Limit: {RATE_LIMIT_MAX} in {RATE_LIMIT_WINDOW}s.",
+            detail=(
+                f"Too many requests. Limit: {MUTATION_RATE_LIMIT_MAX} in "
+                f"{MUTATION_RATE_LIMIT_WINDOW}s."
+            ),
         )
-    _rate_log[client_ip].append(now)
+    _mutation_rate_log[client_ip].append(now)
+
+
+def _check_poll_rate_limit(client_ip: str) -> None:
+    now = time.time()
+    timestamps = _poll_rate_log[client_ip]
+    _poll_rate_log[client_ip] = [
+        timestamp
+        for timestamp in timestamps
+        if now - timestamp < POLL_RATE_LIMIT_WINDOW
+    ]
+    if len(_poll_rate_log[client_ip]) >= POLL_RATE_LIMIT_MAX:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many polling requests. Limit: {POLL_RATE_LIMIT_MAX} in {POLL_RATE_LIMIT_WINDOW}s.",
+        )
+    _poll_rate_log[client_ip].append(now)
 
 
 def verify_api_key(x_api_key: str = Header(default="")):
@@ -141,7 +166,10 @@ async def lifespan(app: FastAPI):
         app.state.dataset_job_dispatcher,
     )
     app.state.max_upload_bytes = MAX_UPLOAD_BYTES
+    repository = app.state.dataset_repository_factory()
     app.state.dataset_service_factory().ensure_default_workspace()
+    for version in repository.list_dataset_versions_by_status(["profiling"]):
+        app.state.dataset_job_dispatcher.dispatch_profile(version.id)
     try:
         yield
     finally:
@@ -166,7 +194,8 @@ app.add_middleware(
 app.include_router(
     build_datasets_router(
         verify_api_key=verify_api_key,
-        check_rate_limit=_check_rate_limit,
+        check_mutation_rate_limit=_check_mutation_rate_limit,
+        check_poll_rate_limit=_check_poll_rate_limit,
     )
 )
 
@@ -189,7 +218,7 @@ def create_analysis(
     if not req.question.strip():
         raise HTTPException(status_code=400, detail="question cannot be empty")
 
-    _check_rate_limit(request.client.host if request.client else "unknown")
+    _check_mutation_rate_limit(request.client.host if request.client else "unknown")
 
     analysis_id = str(uuid.uuid4())
     routing = route_sync(req.question)
@@ -238,7 +267,7 @@ def approve_analysis(
     _: None = Depends(verify_api_key),
 ):
     _validate_analysis_id(analysis_id)
-    _check_rate_limit(request.client.host if request.client else "unknown")
+    _check_mutation_rate_limit(request.client.host if request.client else "unknown")
 
     conn = _get_analyses_conn()
     try:
@@ -273,7 +302,7 @@ def revise_analysis(
     _: None = Depends(verify_api_key),
 ):
     _validate_analysis_id(analysis_id)
-    _check_rate_limit(request.client.host if request.client else "unknown")
+    _check_mutation_rate_limit(request.client.host if request.client else "unknown")
 
     conn = _get_analyses_conn()
     try:
@@ -327,7 +356,7 @@ def reject_analysis(
     _: None = Depends(verify_api_key),
 ):
     _validate_analysis_id(analysis_id)
-    _check_rate_limit(request.client.host if request.client else "unknown")
+    _check_mutation_rate_limit(request.client.host if request.client else "unknown")
 
     conn = _get_analyses_conn()
     try:
@@ -351,7 +380,7 @@ def management_report(
     request: Request,
     _: None = Depends(verify_api_key),
 ):
-    _check_rate_limit(request.client.host if request.client else "unknown")
+    _check_mutation_rate_limit(request.client.host if request.client else "unknown")
 
     questions = [
         "Что растёт быстрее рынка?",
@@ -407,6 +436,8 @@ def _execute_analysis_background(analysis_id: str) -> None:
     try:
         plan_dict = json.loads(row["plan_json"])
         plan = AnalysisPlan(**plan_dict)
+        from agent.executor import execute as execute_plan
+
         result = execute_plan(plan)
         conn.execute(
             "UPDATE analyses SET status = 'done', result_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",

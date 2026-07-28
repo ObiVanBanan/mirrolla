@@ -1,45 +1,49 @@
 from __future__ import annotations
 
+import os
 import logging
-import threading
 import time
+from concurrent.futures import Future, ThreadPoolExecutor, wait
 from collections.abc import Callable
 
 from agent.runtime.profiler import profile_dataset_version
 from application.datasets.jobs import DatasetProfileJob, run_dataset_profile_job
 from application.datasets.repository import DatasetRepository, RawFileStorage
+from application.datasets.service import DatasetService
 
 
 logger = logging.getLogger(__name__)
+DEFAULT_MAX_WORKERS = 2
 
 
 class InProcessDatasetJobDispatcher:
-    """Dispatch dataset profiling jobs to lightweight daemon threads."""
+    """Dispatch dataset profiling jobs to a bounded thread pool."""
 
     def __init__(
         self,
         *,
         repository_factory: Callable[[], DatasetRepository],
         storage_factory: Callable[[], RawFileStorage],
+        max_workers: int | None = None,
         profiler=profile_dataset_version,
     ) -> None:
         self._repository_factory = repository_factory
         self._storage_factory = storage_factory
         self._profiler = profiler
-        self._threads: set[threading.Thread] = set()
-        self._lock = threading.Lock()
+        self._max_workers = max_workers or int(
+            os.getenv("DATASET_PROFILE_MAX_WORKERS", str(DEFAULT_MAX_WORKERS))
+        )
+        self._executor = ThreadPoolExecutor(
+            max_workers=self._max_workers,
+            thread_name_prefix="dataset-profile",
+        )
+        self._futures: set[Future] = set()
 
     def dispatch_profile(self, version_id: str) -> None:
         job = DatasetProfileJob(version_id=version_id)
-        thread = threading.Thread(
-            target=self._run_job,
-            args=(job,),
-            name=f"dataset-profile-{version_id[:12]}",
-            daemon=True,
-        )
-        with self._lock:
-            self._threads.add(thread)
-        thread.start()
+        future = self._executor.submit(self._run_job, job)
+        self._futures.add(future)
+        future.add_done_callback(self._futures.discard)
 
     def _run_job(self, job: DatasetProfileJob) -> None:
         started_at = time.perf_counter()
@@ -77,22 +81,20 @@ class InProcessDatasetJobDispatcher:
                 )
         except Exception:
             logger.exception("dataset_profile_failed version_id=%s", job.version_id)
+            try:
+                service = DatasetService(self._repository_factory(), self)
+                service.fail_profile(
+                    job.version_id,
+                    code="profile_runtime_error",
+                    message="Dataset profiling failed unexpectedly",
+                )
+            except Exception:
+                logger.exception("dataset_profile_fail_marking_failed version_id=%s", job.version_id)
         finally:
-            current = threading.current_thread()
-            with self._lock:
-                self._threads.discard(current)
+            pass
 
     def shutdown(self, timeout: float = 5.0) -> None:
-        deadline = time.perf_counter() + timeout
-        while True:
-            with self._lock:
-                threads = [thread for thread in self._threads if thread.is_alive()]
-            if not threads:
-                return
-
-            remaining = deadline - time.perf_counter()
-            if remaining <= 0:
-                return
-
-            for thread in threads:
-                thread.join(min(0.1, remaining))
+        pending = [future for future in self._futures if not future.done()]
+        if pending:
+            wait(pending, timeout=timeout)
+        self._executor.shutdown(wait=True, cancel_futures=False)

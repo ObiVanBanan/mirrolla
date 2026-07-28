@@ -9,8 +9,10 @@ from application.datasets.jobs import DatasetProfileJobResult
 from application.datasets.models import (
     AnalysisDatasetSelection,
     Dataset,
+    DatasetColumnProfile,
     DatasetIssue,
     DatasetProfile,
+    DatasetSheetProfile,
     DataWorkspace,
     DatasetVersion,
 )
@@ -58,6 +60,10 @@ class InMemoryDatasetRepository:
     def list_dataset_versions(self, dataset_id: str) -> list[DatasetVersion]:
         return [item for item in self.versions.values() if item.dataset_id == dataset_id]
 
+    def list_dataset_versions_by_status(self, statuses) -> list[DatasetVersion]:
+        values = set(statuses)
+        return [item for item in self.versions.values() if item.status in values]
+
     def find_dataset_version_by_checksum(
         self,
         workspace_id: str,
@@ -90,6 +96,17 @@ class InMemoryDatasetRepository:
             for selections in self.analysis_selections.values()
             for selection in selections
         )
+
+    def delete_dataset_if_empty(self, dataset_id: str) -> bool:
+        if any(version.dataset_id == dataset_id for version in self.versions.values()):
+            return False
+        return self.datasets.pop(dataset_id, None) is not None
+
+    def count_versions_by_storage_key(self, storage_key: str) -> int:
+        return sum(1 for version in self.versions.values() if version.storage_key == storage_key)
+
+    def purge_dataset_version(self, version_id: str) -> bool:
+        return self.versions.pop(version_id, None) is not None
 
 
 class RecordingDispatcher:
@@ -174,18 +191,13 @@ class DatasetServiceTests(unittest.TestCase):
 
         ready = self.service.complete_profile(
             version.id,
-            profile=DatasetProfile(
-                format="xlsx",
-                row_count=42,
-                columns=["date", "product_code", "sales"],
-                sheet_names=["Sheet1"],
-            ),
+            profile=_profile("xlsx", "Sheet1", ["date", "product_code", "sales"], row_count=42),
             issues=[],
             success=True,
         )
         self.assertEqual(ready.status, "ready")
         self.assertIsNotNone(ready.profile)
-        self.assertEqual(ready.profile.columns, ["date", "product_code", "sales"])
+        self.assertEqual(ready.profile.sheets[0].columns[0].name, "date")
 
     def test_complete_profile_rejects_ready_without_profile(self) -> None:
         workspace = self.service.ensure_default_workspace()
@@ -228,7 +240,7 @@ class DatasetServiceTests(unittest.TestCase):
         with self.assertRaises(InvalidDatasetStateError):
             self.service.complete_profile(
                 version.id,
-                profile=DatasetProfile(format="csv", row_count=10, columns=["date"]),
+                profile=_profile("csv", "__root__", ["date"], row_count=10),
                 issues=[DatasetIssue(code="bad_schema", message="schema mismatch", severity="error")],
                 success=True,
             )
@@ -261,12 +273,12 @@ class DatasetServiceTests(unittest.TestCase):
         self.service.start_profiling(second.id)
         self.service.complete_profile(
             first.id,
-            profile=DatasetProfile(format="csv", row_count=10, columns=["date"]),
+            profile=_profile("csv", "__root__", ["date"], row_count=10),
             success=True,
         )
         self.service.complete_profile(
             second.id,
-            profile=DatasetProfile(format="csv", row_count=8, columns=["sku"]),
+            profile=_profile("csv", "__root__", ["sku"], row_count=8),
             success=True,
         )
 
@@ -307,7 +319,7 @@ class DatasetServiceTests(unittest.TestCase):
         self.service.start_profiling(version.id)
         self.service.complete_profile(
             version.id,
-            profile=DatasetProfile(format="csv", row_count=10, columns=["date"]),
+            profile=_profile("csv", "__root__", ["date"], row_count=10),
             issues=[DatasetIssue(code="sample_warning", message="warning", severity="warning")],
             success=True,
         )
@@ -354,3 +366,49 @@ class DatasetServiceTests(unittest.TestCase):
                 issues=[],
                 success=True,
             )
+
+    def test_fail_profile_sets_invalid_issue(self) -> None:
+        workspace = self.service.ensure_default_workspace()
+        _, version = self.service.register_upload_receiving(
+            workspace.id,
+            original_filename="sales.csv",
+        )
+        self.service.complete_upload(
+            version.id,
+            storage_key="blob-1",
+            size_bytes=10,
+            checksum_sha256="sum-1",
+            file_format="csv",
+        )
+        self.service.start_profiling(version.id)
+
+        failed = self.service.fail_profile(
+            version.id,
+            code="profile_runtime_error",
+            message="Dataset profiling failed unexpectedly",
+        )
+
+        self.assertEqual(failed.status, "invalid")
+        self.assertEqual(failed.issues[0].code, "profile_runtime_error")
+
+
+def _profile(file_format: str, sheet_name: str, columns: list[str], *, row_count: int) -> DatasetProfile:
+    return DatasetProfile(
+        format=file_format,
+        sheets=[
+            DatasetSheetProfile(
+                name=sheet_name,
+                row_count=row_count,
+                columns=[
+                    DatasetColumnProfile(
+                        name=column,
+                        inferred_type="string",
+                        null_ratio=0.0,
+                        unique_count=row_count,
+                        examples=[column],
+                    )
+                    for column in columns
+                ],
+            )
+        ],
+    )

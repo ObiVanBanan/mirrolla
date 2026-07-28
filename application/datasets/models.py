@@ -26,11 +26,34 @@ class DatasetIssue(BaseModel):
     severity: DatasetIssueSeverity = "error"
 
 
+class DatasetColumnProfile(BaseModel):
+    name: str = Field(min_length=1)
+    inferred_type: Literal[
+        "string",
+        "integer",
+        "number",
+        "boolean",
+        "datetime",
+        "unknown",
+    ]
+    null_ratio: float = Field(ge=0.0, le=1.0)
+    unique_count: int | None = Field(default=None, ge=0)
+    examples: list[str] = Field(default_factory=list, max_length=5)
+    min_value: str | None = None
+    max_value: str | None = None
+
+
+class DatasetSheetProfile(BaseModel):
+    name: str = Field(min_length=1)
+    row_count: int = Field(ge=0)
+    columns: list[DatasetColumnProfile] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    sampled: bool = False
+
+
 class DatasetProfile(BaseModel):
     format: str = Field(min_length=1)
-    row_count: int = Field(ge=0)
-    columns: list[str] = Field(default_factory=list)
-    sheet_names: list[str] = Field(default_factory=list)
+    sheets: list[DatasetSheetProfile] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
 
     @field_validator("format")

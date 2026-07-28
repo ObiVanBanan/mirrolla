@@ -176,6 +176,20 @@ class DatasetService:
         saved = self._repository.save_dataset_version(version)
         return saved
 
+    def fail_profile(
+        self,
+        version_id: str,
+        *,
+        code: str,
+        message: str,
+    ) -> DatasetVersion:
+        return self.complete_profile(
+            version_id,
+            profile=None,
+            issues=[DatasetIssue(code=code, message=message, severity="error")],
+            success=False,
+        )
+
     def soft_delete_version(self, version_id: str) -> DatasetVersion:
         version = self._require_version(version_id)
         self._transition(version, "deleted")

@@ -308,6 +308,35 @@ def _load_helpers_code() -> str:
     return "\n\n".join(blocks)
 
 
+def _build_profile_block(manifest) -> str:
+    """Render dataset profiles and semantic bindings for the prompt."""
+    dataset_lines: list[str] = []
+    for dataset in manifest.datasets:
+        dataset_lines.append(f"### {dataset.dataset_id} — {dataset.logical_name}")
+        for file_profile in dataset.files:
+            dataset_lines.append(
+                f"- file: {os.path.basename(file_profile.path)} | rows: {file_profile.row_count} | checksum: {file_profile.checksum}"
+            )
+            for column in file_profile.columns:
+                dataset_lines.append(
+                    f"  - column: {column.name} ({column.logical_type}), null_ratio={column.null_ratio:.2f}, unique={column.unique_count}"
+                )
+        for warning in dataset.warnings:
+            dataset_lines.append(f"- warning: {warning}")
+
+    binding_lines = [
+        f"- {binding.concept} -> {binding.dataset_id}.{binding.column_name} (confidence={binding.confidence:.2f})"
+        for binding in manifest.semantic_bindings
+    ]
+
+    return (
+        "## Dataset profiles\n"
+        + "\n".join(dataset_lines)
+        + "\n\n## Semantic mapping\n"
+        + ("\n".join(binding_lines) if binding_lines else "- no semantic bindings")
+    )
+
+
 # === Сборка prompt для Code Interpreter ===
 
 def _build_prompt(plan: AnalysisPlan, balances_available: bool) -> str:
@@ -395,6 +424,70 @@ print(files)
 - Финальный ответ ОБЯЗАТЕЛЬНО содержит JSON с findings.
 """
     return prompt
+
+
+def _build_manifest_prompt(plan: AnalysisPlan, manifest, balances_available: bool) -> str:
+    """Prompt builder for the exemplar runtime."""
+    skill_md = _load_skill_md(plan.skill)
+    helpers_code = load_reference_code(HELPERS_DIR, plan)
+    hypotheses_block = "\n".join(
+        f"### {hypothesis.id}: {hypothesis.title}\n"
+        f"- Datasets: {', '.join(hypothesis.datasets)}\n"
+        f"- Method: {hypothesis.method}\n"
+        for hypothesis in plan.hypotheses
+    )
+    limitations_block = "\n".join(f"- {limitation}" for limitation in manifest.limitations)
+    restrictions_block = "\n".join(f"- {restriction}" for restriction in manifest.runtime_restrictions)
+    stocks_note = ""
+    if not balances_available:
+        stocks_note = (
+            "\n## Ограничение по остаткам\n"
+            "- Датасет stocks не удалось подтвердить или он недоступен.\n"
+            "- Если остатки нужны для вывода, верни limitation и partial/not_enough_data.\n"
+        )
+
+    return f"""# Mirrolla analytical execution manifest
+
+## User question
+{plan.question}
+
+## Skill
+- id: {manifest.skill_id}
+- version: {manifest.skill_version}
+- output_contract: {manifest.expected_output_contract}
+
+## Requested scope
+- product_codes: {', '.join(plan.product_codes) if plan.product_codes else 'all products'}
+- current_period_days: {manifest.current_period_days}
+- comparison_method: {manifest.comparison_method}
+
+{_build_profile_block(manifest)}
+
+## Hypotheses approved by planner
+{hypotheses_block}
+
+## Planner limitations
+{limitations_block or '- none'}
+{stocks_note}
+
+## Runtime restrictions
+{restrictions_block}
+
+## Skill methodology
+{skill_md}
+
+## Relevant reference code
+{helpers_code or _load_helpers_code()}
+
+{UNIVERSAL_ANALYSIS_INSTRUCTIONS}
+
+## Critical rules
+- Use only datasets and columns explicitly listed in dataset profiles and semantic mapping.
+- If a required concept is unavailable, do not guess. Return `partial` or `not_enough_data`.
+- Keep `change_pct` null when previous period is zero. Do not emit NaN or inf.
+- Final output must be valid JSON with keys: answer_status, answer, findings, limitations.
+- Every finding for this skill must describe a concrete product and include `metrics.change_pct`.
+"""
 
 
 # === Парсинг результатов Code Interpreter ===
@@ -600,7 +693,7 @@ def validate_analysis_result(
 
 # === Главный execute() ===
 
-def execute(plan: AnalysisPlan, max_retries: int = 2) -> ExecutionResult:
+def _execute_legacy(plan: AnalysisPlan, max_retries: int = 2) -> ExecutionResult:
     """
     Выполнить план анализа через OpenAI Code Interpreter.
 
@@ -749,6 +842,133 @@ def execute(plan: AnalysisPlan, max_retries: int = 2) -> ExecutionResult:
     print(f"  Ошибок: {len(errors)}")
 
     return result
+
+
+def _execute_exemplar(plan: AnalysisPlan, max_retries: int = 2) -> ExecutionResult:
+    """Execute the sales-decline exemplar via manifest/profile/mapping contracts."""
+    from agent.runtime.manifest_builder import build_manifest
+    from agent.runtime.profiler import profile_datasets
+    from agent.runtime.reference_loader import load_reference_code
+    from agent.runtime.semantic_mapper import build_semantic_mapping
+    from agent.runtime.skill_loader import load_skill_metadata
+    from agent.runtime.validation import (
+        validate_generic_result,
+        validate_sales_decline_result,
+    )
+
+    print(f"\n{'='*60}")
+    print("  EXECUTOR — Exemplar Runtime")
+    print(f"{'='*60}")
+
+    print("\n  [Executor] Шаг 1: Pre-fetch и профилирование данных...")
+    balances_ok, balances_msg = _prefetch_balances(plan)
+    print(f"  [Executor] Балансы: {balances_msg}")
+
+    dataset_ids = sorted({
+        dataset
+        for hypothesis in plan.hypotheses
+        for dataset in hypothesis.datasets
+    })
+    profiles = profile_datasets(PROJECT_ROOT, dataset_ids)
+    metadata = load_skill_metadata(plan.skill)
+    bindings, missing_required = build_semantic_mapping(profiles, metadata)
+    limitations = list(plan.limitations)
+    if missing_required:
+        limitations.append(
+            "Отсутствуют обязательные бизнес-концепты: " + ", ".join(sorted(missing_required))
+        )
+        return ExecutionResult(
+            question=plan.question,
+            skill=plan.skill,
+            answer_status="not_enough_data",
+            findings=[],
+            hypothesis_results=[],
+            charts=[],
+            summary="Недостаточно данных для достоверного анализа.",
+            limitations=limitations,
+            code_generated=None,
+            errors=[],
+        )
+
+    manifest = build_manifest(plan, metadata, profiles, bindings)
+    prompt = _build_manifest_prompt(plan, manifest, balances_ok)
+    file_paths = _collect_data_files(plan)
+    errors: list[str] = []
+
+    print("\n  [Executor] Шаг 2: Запуск Code Interpreter...")
+    from agent.ci_runner import CIRunner
+
+    runner = CIRunner()
+    try:
+        ci_result = runner.run_analysis(
+            prompt=prompt,
+            file_paths=file_paths,
+            max_retries=max_retries,
+        )
+    except Exception as e:
+        errors.append(f"CI error: {e}")
+        ci_result = {"status": "failed", "text": "", "charts": [], "error": str(e)}
+
+    findings, hypothesis_results, answer_status, answer, extra_lim = _parse_ci_result(ci_result, plan)
+    limitations.extend(extra_lim)
+
+    parsed = _extract_json_from_text(ci_result.get("text", "")) or {}
+    generic_report = validate_generic_result(parsed, manifest)
+    sales_report = validate_sales_decline_result(parsed, manifest)
+
+    validation_errors = [issue.message for issue in generic_report.issues + sales_report.issues]
+    if validation_errors:
+        print(f"  [Executor] ⚠ Validator issues: {len(validation_errors)}")
+        for issue in validation_errors:
+            print(f"     - {issue}")
+        if len(errors) < max_retries:
+            limitations.append("Validation issues: " + "; ".join(validation_errors))
+        if not findings and answer_status == "answered":
+            answer_status = "partial"
+    else:
+        print("  [Executor] ✅ Validators passed")
+
+    if not balances_ok and "stocks" in dataset_ids:
+        limitations.append("1С балансы недоступны (VPN) — гипотезы по остаткам не проверены")
+
+    print("\n  [Executor] Шаг 3: Reporter...")
+    try:
+        from agent.reporter import synthesize as reporter_synthesize
+        manager_answer = reporter_synthesize(
+            question=plan.question,
+            skill=plan.skill,
+            findings=findings,
+            limitations=limitations,
+            answer_status=answer_status,
+            ci_answer=answer,
+        )
+    except Exception as e:
+        manager_answer = answer
+        errors.append(f"Reporter error: {e}")
+
+    return ExecutionResult(
+        question=plan.question,
+        skill=plan.skill,
+        answer_status=answer_status,
+        findings=findings,
+        hypothesis_results=hypothesis_results,
+        charts=ci_result.get("charts", []),
+        summary=manager_answer,
+        limitations=limitations,
+        code_generated=None,
+        errors=errors,
+    )
+
+
+def execute(plan: AnalysisPlan, max_retries: int = 2) -> ExecutionResult:
+    """Facade: use exemplar runtime for sales-decline, fallback to legacy elsewhere."""
+    legacy_enabled = os.getenv("MIRROLLA_USE_LEGACY_EXECUTOR", "").lower() in {"1", "true", "yes"}
+    if not legacy_enabled and plan.skill == SkillType.SALES_DECLINE:
+        try:
+            return _execute_exemplar(plan, max_retries=max_retries)
+        except Exception as e:
+            print(f"  [Executor] ⚠ Exemplar runtime failed, fallback to legacy: {e}")
+    return _execute_legacy(plan, max_retries=max_retries)
 
 
 # === CLI ===

@@ -257,6 +257,36 @@ class SqliteDatasetRepository:
             ).fetchall()
         return [self._version_from_row(row) for row in rows]
 
+    def list_dataset_versions_by_status(self, statuses) -> list[DatasetVersion]:
+        values = list(statuses)
+        if not values:
+            return []
+
+        placeholders = ",".join("?" for _ in values)
+        with self._connection() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT
+                    id,
+                    dataset_id,
+                    original_filename,
+                    storage_key,
+                    format,
+                    size_bytes,
+                    checksum_sha256,
+                    status,
+                    profile_json,
+                    issues_json,
+                    created_at,
+                    deleted_at
+                FROM dataset_versions
+                WHERE status IN ({placeholders})
+                ORDER BY created_at, id
+                """,
+                tuple(values),
+            ).fetchall()
+        return [self._version_from_row(row) for row in rows]
+
     def find_dataset_version_by_checksum(
         self,
         workspace_id: str,

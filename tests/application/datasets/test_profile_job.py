@@ -11,8 +11,10 @@ from application.datasets.jobs import (
 from application.datasets.models import (
     AnalysisDatasetSelection,
     Dataset,
+    DatasetColumnProfile,
     DatasetIssue,
     DatasetProfile,
+    DatasetSheetProfile,
     DataWorkspace,
     DatasetVersion,
 )
@@ -63,6 +65,10 @@ class InMemoryDatasetRepository:
 
     def list_dataset_versions(self, dataset_id: str) -> list[DatasetVersion]:
         return [item for item in self.versions.values() if item.dataset_id == dataset_id]
+
+    def list_dataset_versions_by_status(self, statuses) -> list[DatasetVersion]:
+        values = set(statuses)
+        return [item for item in self.versions.values() if item.status in values]
 
     def find_dataset_version_by_checksum(
         self,
@@ -146,7 +152,7 @@ class DatasetProfileJobTests(unittest.TestCase):
         profiler = RecordingProfiler(
             DatasetProfileJobResult(
                 version_id=self.version.id,
-                profile=DatasetProfile(format="csv", row_count=1, columns=["date", "sales"]),
+                profile=_profile("csv", ["date", "sales"], row_count=1),
                 issues=[],
                 success=True,
             )
@@ -162,7 +168,7 @@ class DatasetProfileJobTests(unittest.TestCase):
         self.assertIsNotNone(result)
         assert result is not None
         self.assertEqual(result.status, "ready")
-        self.assertEqual(result.profile.columns, ["date", "sales"])
+        self.assertEqual(result.profile.sheets[0].columns[0].name, "date")
         self.assertEqual(profiler.calls, [self.version.id])
 
     def test_profile_job_marks_version_invalid_on_failure(self) -> None:
@@ -190,14 +196,14 @@ class DatasetProfileJobTests(unittest.TestCase):
     def test_profile_job_is_idempotent_for_ready_version(self) -> None:
         self.service.complete_profile(
             self.version.id,
-            profile=DatasetProfile(format="csv", row_count=1, columns=["date"]),
+            profile=_profile("csv", ["date"], row_count=1),
             issues=[],
             success=True,
         )
         profiler = RecordingProfiler(
             DatasetProfileJobResult(
                 version_id=self.version.id,
-                profile=DatasetProfile(format="csv", row_count=2, columns=["other"]),
+                profile=_profile("csv", ["other"], row_count=2),
                 issues=[],
                 success=True,
             )
@@ -213,7 +219,7 @@ class DatasetProfileJobTests(unittest.TestCase):
         self.assertIsNotNone(result)
         assert result is not None
         self.assertEqual(result.status, "ready")
-        self.assertEqual(result.profile.columns, ["date"])
+        self.assertEqual(result.profile.sheets[0].columns[0].name, "date")
         self.assertEqual(profiler.calls, [])
 
     def test_profile_job_rejects_non_profiling_version(self) -> None:
@@ -231,7 +237,7 @@ class DatasetProfileJobTests(unittest.TestCase):
         profiler = RecordingProfiler(
             DatasetProfileJobResult(
                 version_id=second_version.id,
-                profile=DatasetProfile(format="csv", row_count=1, columns=["sku"]),
+                profile=_profile("csv", ["sku"], row_count=1),
                 issues=[],
                 success=True,
             )
@@ -245,3 +251,24 @@ class DatasetProfileJobTests(unittest.TestCase):
                 profiler=profiler,
             )
 
+
+def _profile(file_format: str, columns: list[str], *, row_count: int) -> DatasetProfile:
+    return DatasetProfile(
+        format=file_format,
+        sheets=[
+            DatasetSheetProfile(
+                name="__root__",
+                row_count=row_count,
+                columns=[
+                    DatasetColumnProfile(
+                        name=column,
+                        inferred_type="string",
+                        null_ratio=0.0,
+                        unique_count=row_count,
+                        examples=[column],
+                    )
+                    for column in columns
+                ],
+            )
+        ],
+    )

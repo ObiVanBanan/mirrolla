@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import unittest
+from datetime import UTC, datetime
 
 from openpyxl import Workbook
 
@@ -50,9 +51,10 @@ class DatasetVersionProfilerTests(unittest.TestCase):
         result = profile_dataset_version(version, storage)
 
         self.assertTrue(result.success)
-        self.assertEqual(result.profile.sheet_names, ["Sales", "Stocks"])
-        self.assertEqual(result.profile.columns, ["date", "sales"])
-        self.assertEqual(result.profile.row_count, 2)
+        self.assertEqual([sheet.name for sheet in result.profile.sheets], ["Sales", "Stocks"])
+        self.assertEqual(result.profile.sheets[0].columns[0].name, "date")
+        self.assertEqual(result.profile.sheets[0].row_count, 1)
+        self.assertEqual(result.profile.sheets[1].row_count, 1)
 
     def test_profiles_utf8_bom_csv(self) -> None:
         storage = InMemoryStorage()
@@ -64,8 +66,8 @@ class DatasetVersionProfilerTests(unittest.TestCase):
         result = profile_dataset_version(version, storage)
 
         self.assertTrue(result.success)
-        self.assertEqual(result.profile.columns, ["date", "sales"])
-        self.assertEqual(result.profile.row_count, 2)
+        self.assertEqual(result.profile.sheets[0].columns[0].name, "date")
+        self.assertEqual(result.profile.sheets[0].row_count, 2)
 
     def test_profiles_cp1251_csv_with_warning(self) -> None:
         storage = InMemoryStorage()
@@ -78,7 +80,7 @@ class DatasetVersionProfilerTests(unittest.TestCase):
 
         self.assertTrue(result.success)
         self.assertTrue(any("cp1251" in warning for warning in result.profile.warnings))
-        self.assertEqual(result.profile.columns, ["дата", "продажи"])
+        self.assertEqual(result.profile.sheets[0].columns[0].name, "дата")
 
     def test_profiles_json_list_of_objects(self) -> None:
         storage = InMemoryStorage()
@@ -90,8 +92,52 @@ class DatasetVersionProfilerTests(unittest.TestCase):
         result = profile_dataset_version(version, storage)
 
         self.assertTrue(result.success)
-        self.assertEqual(result.profile.columns, ["date", "sales"])
-        self.assertEqual(result.profile.row_count, 2)
+        self.assertEqual(result.profile.sheets[0].columns[0].name, "date")
+        self.assertEqual(result.profile.sheets[0].row_count, 2)
+
+    def test_csv_header_only_is_invalid(self) -> None:
+        storage = InMemoryStorage()
+        storage.objects["workspace/.blobs/header-only"] = b"date,sales\n"
+        version = _build_version("dsv_header_only", "csv", "workspace/.blobs/header-only")
+
+        result = profile_dataset_version(version, storage)
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.issues[0].code, "dataset_has_no_rows")
+
+    def test_json_empty_array_is_invalid(self) -> None:
+        storage = InMemoryStorage()
+        storage.objects["workspace/.blobs/empty-json"] = b"[]"
+        version = _build_version("dsv_empty_json", "json", "workspace/.blobs/empty-json")
+
+        result = profile_dataset_version(version, storage)
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.issues[0].code, "dataset_has_no_rows")
+
+    def test_json_scalar_rows_are_invalid(self) -> None:
+        storage = InMemoryStorage()
+        storage.objects["workspace/.blobs/scalar-json"] = json.dumps([{"sku": "A"}, 123]).encode("utf-8")
+        version = _build_version("dsv_scalar_json", "json", "workspace/.blobs/scalar-json")
+
+        result = profile_dataset_version(version, storage)
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.issues[0].code, "json_scalar_rows_not_supported")
+
+    def test_xlsx_without_populated_sheets_is_invalid(self) -> None:
+        workbook = Workbook()
+        workbook.active.title = "Sales"
+        payload = io.BytesIO()
+        workbook.save(payload)
+        storage = InMemoryStorage()
+        storage.objects["workspace/.blobs/empty-xlsx"] = payload.getvalue()
+        version = _build_version("dsv_empty_xlsx", "xlsx", "workspace/.blobs/empty-xlsx")
+
+        result = profile_dataset_version(version, storage)
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.issues[0].code, "dataset_has_no_rows")
 
     def test_damaged_xlsx_returns_invalid_issue(self) -> None:
         storage = InMemoryStorage()
@@ -111,10 +157,24 @@ class DatasetVersionProfilerTests(unittest.TestCase):
         self.assertFalse(result.success)
         self.assertEqual(result.issues[0].code, "storage_missing")
 
+    def test_large_profile_sets_sampled_and_limits_examples(self) -> None:
+        rows = ["id,value"]
+        for index in range(10020):
+            rows.append(f"{index},item-{index}")
+        storage = InMemoryStorage()
+        storage.objects["workspace/.blobs/large-csv"] = ("\n".join(rows) + "\n").encode("utf-8")
+        version = _build_version("dsv_large_csv", "csv", "workspace/.blobs/large-csv")
+
+        result = profile_dataset_version(version, storage)
+
+        self.assertTrue(result.success)
+        sheet = result.profile.sheets[0]
+        self.assertTrue(sheet.sampled)
+        self.assertEqual(len(sheet.columns[1].examples), 5)
+        self.assertIsNone(sheet.columns[1].unique_count)
+
 
 def _build_version(version_id: str, file_format: str, storage_key: str) -> DatasetVersion:
-    from datetime import UTC, datetime
-
     return DatasetVersion(
         id=version_id,
         dataset_id="ds_1",
