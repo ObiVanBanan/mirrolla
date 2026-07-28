@@ -1,4 +1,5 @@
 import os
+import sqlite3
 import tempfile
 import time
 import unittest
@@ -16,6 +17,7 @@ from application.datasets.models import (
     DatasetSheetProfile,
     DatasetVersion,
 )
+from infrastructure.storage.execution_files import DatasetChecksumMismatchError
 
 
 class ApiTransitionTests(unittest.TestCase):
@@ -416,10 +418,10 @@ class ApiTransitionTests(unittest.TestCase):
 
         captured = {}
 
-        def fake_execute(plan, *, analysis_id=None, execution_manifest=None, file_paths=None, max_retries=2):
-            captured["analysis_id"] = analysis_id
-            captured["manifest"] = execution_manifest
-            captured["file_paths"] = list(file_paths or [])
+        def fake_execute(plan, *, analysis_id=None, attached_input=None, max_retries=2):
+            captured["analysis_id"] = analysis_id or attached_input.analysis_id
+            captured["manifest"] = attached_input.manifest
+            captured["file_paths"] = [item.local_path for item in attached_input.files]
             return ExecutionResult(
                 question=plan.question,
                 skill=plan.skill,
@@ -486,6 +488,210 @@ class ApiTransitionTests(unittest.TestCase):
         self.assertEqual(fetched.status_code, 200)
         self.assertEqual(fetched.json()["status"], "error")
         self.assertEqual(fetched.json()["result"]["error"]["code"], "dataset_blob_missing")
+
+    @patch("api.main.generate_plan")
+    @patch("api.main.route_sync")
+    def test_attached_analysis_stores_execution_mode_and_expected_ids(self, route_sync, generate_plan):
+        route_sync.return_value = type("Routing", (), {
+            "skill": SkillType.SALES_DECLINE,
+            "product_codes": [],
+            "period_days": 14,
+        })()
+        generate_plan.side_effect = lambda question, routing=None, dataset_context=None: self._plan(question)
+
+        upload = self.client.post(
+            "/api/v1/workspaces/default/datasets",
+            files={"file": ("sales.csv", b"date,sales\n2026-07-01,10\n", "text/csv")},
+            data={"display_name": "Sales"},
+        )
+        version_id = upload.json()["version"]["id"]
+        self._wait_until_ready(version_id)
+
+        created = self.client.post(
+            "/api/v1/analyses",
+            json={"question": "Почему упали продажи?", "dataset_version_ids": [version_id]},
+        )
+        self.assertEqual(created.status_code, 200)
+        analysis_id = created.json()["id"]
+
+        conn = sqlite3.connect(api_main.ANALYSES_DB)
+        try:
+            row = conn.execute(
+                "SELECT execution_mode, dataset_version_ids_json FROM analyses WHERE id = ?",
+                (analysis_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+
+        self.assertEqual(row[0], "attached")
+        self.assertEqual(row[1], f'["{version_id}"]')
+
+    @patch("api.main.generate_plan")
+    @patch("api.main.route_sync")
+    def test_attached_analysis_with_deleted_selection_rows_does_not_fallback_to_legacy(self, route_sync, generate_plan):
+        route_sync.return_value = type("Routing", (), {
+            "skill": SkillType.SALES_DECLINE,
+            "product_codes": [],
+            "period_days": 14,
+        })()
+        generate_plan.side_effect = lambda question, routing=None, dataset_context=None: self._plan(question)
+
+        upload = self.client.post(
+            "/api/v1/workspaces/default/datasets",
+            files={"file": ("sales.csv", b"date,sales\n2026-07-01,10\n", "text/csv")},
+        )
+        version_id = upload.json()["version"]["id"]
+        self._wait_until_ready(version_id)
+        created = self.client.post(
+            "/api/v1/analyses",
+            json={"question": "Почему упали продажи?", "dataset_version_ids": [version_id]},
+        )
+        analysis_id = created.json()["id"]
+        repository = self.client.app.state.dataset_repository_factory()
+        repository.save_analysis_dataset_selections(analysis_id, [])
+
+        with patch("agent.executor._execute_legacy", side_effect=AssertionError("legacy must not run")):
+            api_main._execute_analysis_background(analysis_id)
+
+        fetched = self.client.get(f"/api/v1/analyses/{analysis_id}")
+        self.assertEqual(fetched.status_code, 200)
+        self.assertEqual(fetched.json()["status"], "error")
+        self.assertEqual(fetched.json()["result"]["error"]["code"], "dataset_selection_missing")
+        self.assertEqual(fetched.json()["dataset_version_ids"], [version_id])
+
+    @patch("api.main.generate_plan")
+    @patch("api.main.route_sync")
+    def test_attached_analysis_with_reordered_selection_rows_fails(self, route_sync, generate_plan):
+        route_sync.return_value = type("Routing", (), {
+            "skill": SkillType.SALES_DECLINE,
+            "product_codes": [],
+            "period_days": 14,
+        })()
+        generate_plan.side_effect = lambda question, routing=None, dataset_context=None: self._plan(question)
+
+        first = self.client.post(
+            "/api/v1/workspaces/default/datasets",
+            files={"file": ("sales.csv", b"date,sales\n2026-07-01,10\n", "text/csv")},
+        )
+        second = self.client.post(
+            "/api/v1/workspaces/default/datasets",
+            files={"file": ("stocks.csv", b"sku,stock\nA-1,5\n", "text/csv")},
+        )
+        first_id = first.json()["version"]["id"]
+        second_id = second.json()["version"]["id"]
+        self._wait_until_ready(first_id)
+        self._wait_until_ready(second_id)
+        created = self.client.post(
+            "/api/v1/analyses",
+            json={"question": "Почему упали продажи?", "dataset_version_ids": [first_id, second_id]},
+        )
+        analysis_id = created.json()["id"]
+        repository = self.client.app.state.dataset_repository_factory()
+        repository.save_analysis_dataset_selections(
+            analysis_id,
+            [
+                repository.list_analysis_dataset_selections(analysis_id)[1].model_copy(update={"position": 0}),
+                repository.list_analysis_dataset_selections(analysis_id)[0].model_copy(update={"position": 1}),
+            ],
+        )
+
+        with patch("agent.executor._execute_legacy", side_effect=AssertionError("legacy must not run")):
+            api_main._execute_analysis_background(analysis_id)
+
+        fetched = self.client.get(f"/api/v1/analyses/{analysis_id}")
+        self.assertEqual(fetched.json()["status"], "error")
+        self.assertEqual(fetched.json()["result"]["error"]["code"], "dataset_selection_missing")
+
+    @patch("api.main.generate_plan")
+    @patch("api.main.route_sync")
+    def test_manifest_is_saved_on_success(self, route_sync, generate_plan):
+        route_sync.return_value = type("Routing", (), {
+            "skill": SkillType.SALES_DECLINE,
+            "product_codes": [],
+            "period_days": 14,
+        })()
+        generate_plan.side_effect = lambda question, routing=None, dataset_context=None: self._plan(question)
+
+        upload = self.client.post(
+            "/api/v1/workspaces/default/datasets",
+            files={"file": ("sales.csv", b"date,sales\n2026-07-01,10\n", "text/csv")},
+        )
+        version_id = upload.json()["version"]["id"]
+        self._wait_until_ready(version_id)
+        created = self.client.post(
+            "/api/v1/analyses",
+            json={"question": "Почему упали продажи?", "dataset_version_ids": [version_id]},
+        )
+        analysis_id = created.json()["id"]
+
+        with patch("agent.executor.execute") as execute_mock:
+            execute_mock.return_value = ExecutionResult(
+                question="Почему упали продажи?",
+                skill=SkillType.SALES_DECLINE,
+                answer_status="answered",
+                findings=[],
+                hypothesis_results=[],
+                charts=[],
+                summary="ok",
+                limitations=[],
+                errors=[],
+            )
+            api_main._execute_analysis_background(analysis_id)
+
+        conn = sqlite3.connect(api_main.ANALYSES_DB)
+        try:
+            row = conn.execute(
+                "SELECT execution_manifest_json, manifest_sha256 FROM analyses WHERE id = ?",
+                (analysis_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+
+        self.assertIsNotNone(row[0])
+        self.assertIsNotNone(row[1])
+        self.assertNotIn("storage_key", row[0])
+        self.assertNotIn("local_path", row[0])
+
+    @patch("api.main.generate_plan")
+    @patch("api.main.route_sync")
+    def test_manifest_is_saved_on_checksum_failure(self, route_sync, generate_plan):
+        route_sync.return_value = type("Routing", (), {
+            "skill": SkillType.SALES_DECLINE,
+            "product_codes": [],
+            "period_days": 14,
+        })()
+        generate_plan.side_effect = lambda question, routing=None, dataset_context=None: self._plan(question)
+
+        upload = self.client.post(
+            "/api/v1/workspaces/default/datasets",
+            files={"file": ("sales.csv", b"date,sales\n2026-07-01,10\n", "text/csv")},
+        )
+        version_id = upload.json()["version"]["id"]
+        self._wait_until_ready(version_id)
+        created = self.client.post(
+            "/api/v1/analyses",
+            json={"question": "Почему упали продажи?", "dataset_version_ids": [version_id]},
+        )
+        analysis_id = created.json()["id"]
+        with patch(
+            "api.main.materialize_execution_files",
+            side_effect=DatasetChecksumMismatchError("Checksum mismatch for dataset version"),
+        ):
+            with patch("agent.executor.execute", side_effect=AssertionError("executor must not run")):
+                api_main._execute_analysis_background(analysis_id)
+
+        conn = sqlite3.connect(api_main.ANALYSES_DB)
+        try:
+            row = conn.execute(
+                "SELECT execution_manifest_json FROM analyses WHERE id = ?",
+                (analysis_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+
+        self.assertIsNotNone(row[0])
+        self.assertNotIn("storage_key", row[0])
+        self.assertNotIn("local_path", row[0])
 
 
 if __name__ == "__main__":

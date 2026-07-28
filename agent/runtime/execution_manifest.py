@@ -3,6 +3,7 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 from application.datasets.models import DatasetProfile
+from infrastructure.storage.execution_files import MaterializedDatasetFile
 
 
 class ExecutionDatasetReference(BaseModel):
@@ -23,3 +24,9 @@ class ExecutionManifest(BaseModel):
     question: str
     skill_id: str
     datasets: list[ExecutionDatasetReference] = Field(default_factory=list)
+
+
+class AttachedExecutionInput(BaseModel):
+    analysis_id: str
+    manifest: ExecutionManifest
+    files: list[MaterializedDatasetFile] = Field(default_factory=list)

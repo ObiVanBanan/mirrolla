@@ -96,3 +96,29 @@ class DatasetExecutionResolverTests(unittest.TestCase):
 
         with self.assertRaises(DatasetProfileMissingError):
             self.resolver.resolve_for_analysis("analysis-1")
+
+    def test_resolve_version_ids_rejects_cross_workspace_selection(self) -> None:
+        other_workspace = self.repository.save_workspace(
+            self.workspace.model_copy(update={"id": "other", "name": "Other"})
+        )
+        _, first = self._create_ready_version("sales.csv", "sum-1")
+        dataset, version = self.service.register_upload_receiving(
+            other_workspace.id,
+            original_filename="stocks.csv",
+        )
+        self.service.complete_upload(
+            version.id,
+            storage_key="other/.blobs/sum-2",
+            size_bytes=10,
+            checksum_sha256="sum-2",
+            file_format="csv",
+        )
+        self.service.start_profiling(version.id)
+        second = self.service.complete_profile(
+            version.id,
+            profile=_profile("csv", "__root__", ["sku", "stock"], row_count=10),
+            success=True,
+        )
+
+        with self.assertRaises(DatasetVersionNotExecutableError):
+            self.resolver.resolve_version_ids([first.id, second.id])

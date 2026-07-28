@@ -11,6 +11,7 @@ import sqlite3
 import sys
 import time
 import uuid
+import hashlib
 from collections import defaultdict
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -29,12 +30,17 @@ load_dotenv()
 
 from agent.planner import plan as generate_plan
 from agent.router import route_sync
-from agent.runtime.execution_manifest import ExecutionDatasetReference, ExecutionManifest
+from agent.runtime.execution_manifest import (
+    AttachedExecutionInput,
+    ExecutionDatasetReference,
+    ExecutionManifest,
+)
 from agent.schemas import AnalysisPlan
 from api.datasets import build_datasets_router
 from application.datasets.execution import (
     DatasetExecutionError,
     DatasetExecutionResolver,
+    DatasetSelectionMissingError,
 )
 from application.datasets.models import Dataset, DatasetVersion
 from application.datasets.service import (
@@ -96,11 +102,27 @@ def _init_analyses_db(conn: sqlite3.Connection) -> None:
             status TEXT DEFAULT 'planning',
             plan_json TEXT,
             result_json TEXT,
+            execution_mode TEXT NOT NULL DEFAULT 'legacy',
+            dataset_version_ids_json TEXT NOT NULL DEFAULT '[]',
+            execution_manifest_json TEXT,
+            manifest_sha256 TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
         """
     )
+    columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(analyses)").fetchall()
+    }
+    if "execution_mode" not in columns:
+        conn.execute("ALTER TABLE analyses ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'legacy'")
+    if "dataset_version_ids_json" not in columns:
+        conn.execute("ALTER TABLE analyses ADD COLUMN dataset_version_ids_json TEXT NOT NULL DEFAULT '[]'")
+    if "execution_manifest_json" not in columns:
+        conn.execute("ALTER TABLE analyses ADD COLUMN execution_manifest_json TEXT")
+    if "manifest_sha256" not in columns:
+        conn.execute("ALTER TABLE analyses ADD COLUMN manifest_sha256 TEXT")
     conn.commit()
 
 
@@ -272,6 +294,9 @@ def create_analysis(
             raise HTTPException(status_code=409, detail=exc.detail) from exc
         raise
 
+    selected_version_ids = [item.dataset_version_id for item in dataset_context]
+    execution_mode = "attached" if selected_version_ids else "legacy"
+
     plan = generate_plan(
         req.question,
         routing=routing,
@@ -281,20 +306,23 @@ def create_analysis(
     conn = _get_analyses_conn()
     try:
         conn.execute(
-            "INSERT INTO analyses (id, question, skill, status, plan_json) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO analyses (id, question, skill, status, plan_json, execution_mode, dataset_version_ids_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 analysis_id,
                 req.question,
                 plan.skill.value,
                 "awaiting_approval",
                 json.dumps(plan.model_dump(), ensure_ascii=False, default=str),
+                execution_mode,
+                json.dumps(selected_version_ids, ensure_ascii=False),
             ),
         )
         conn.commit()
         try:
             dataset_service.attach_versions_to_analysis(
                 analysis_id,
-                req.dataset_version_ids,
+                selected_version_ids,
             )
         except Exception as exc:
             conn.execute("DELETE FROM analyses WHERE id = ?", (analysis_id,))
@@ -502,12 +530,7 @@ def _build_execution_manifest(
     question: str,
     skill_id: str,
     resolved_inputs,
-    materialized_files,
 ) -> ExecutionManifest:
-    files_by_version_id = {
-        item.dataset_version_id: item
-        for item in materialized_files.files
-    }
     return ExecutionManifest(
         analysis_id=analysis_id,
         question=question,
@@ -519,7 +542,7 @@ def _build_execution_manifest(
                 dataset_version_id=item.dataset_version_id,
                 display_name=item.display_name,
                 original_filename=item.original_filename,
-                sandbox_filename=files_by_version_id[item.dataset_version_id].sandbox_filename,
+                sandbox_filename=f"dataset_{item.position + 1:03d}.{item.format.lower().lstrip('.')}",
                 format=item.format,
                 checksum_sha256=item.checksum_sha256,
                 profile=item.profile,
@@ -527,6 +550,15 @@ def _build_execution_manifest(
             for item in resolved_inputs
         ],
     )
+
+
+def _serialize_manifest(manifest: ExecutionManifest) -> tuple[str, str]:
+    manifest_json = json.dumps(
+        manifest.model_dump(mode="json"),
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return manifest_json, hashlib.sha256(manifest_json.encode("utf-8")).hexdigest()
 
 
 def _serialize_execution_error(exc: Exception) -> dict:
@@ -546,6 +578,14 @@ def _serialize_execution_error(exc: Exception) -> dict:
     }
 
 
+def _load_expected_dataset_version_ids(row: sqlite3.Row) -> list[str]:
+    raw = row["dataset_version_ids_json"] or "[]"
+    loaded = json.loads(raw)
+    if not isinstance(loaded, list):
+        return []
+    return [str(item) for item in loaded]
+
+
 def _execute_analysis_background(analysis_id: str) -> None:
     conn = _get_analyses_conn()
     row = conn.execute("SELECT * FROM analyses WHERE id = ?", (analysis_id,)).fetchone()
@@ -560,21 +600,39 @@ def _execute_analysis_background(analysis_id: str) -> None:
         repository = app.state.dataset_repository_factory()
         storage = app.state.raw_file_storage_factory()
         resolver = DatasetExecutionResolver(repository)
-        resolved_inputs = resolver.resolve_for_analysis(analysis_id)
-        if resolved_inputs:
+        execution_mode = row["execution_mode"] or "legacy"
+        expected_ids = _load_expected_dataset_version_ids(row)
+
+        if execution_mode == "attached":
+            if not expected_ids:
+                raise DatasetSelectionMissingError("Attached dataset selection is incomplete")
+            current_ids = [
+                selection.dataset_version_id
+                for selection in repository.list_analysis_dataset_selections(analysis_id)
+            ]
+            if current_ids != expected_ids:
+                raise DatasetSelectionMissingError("Attached dataset selection is incomplete")
+            resolved_inputs = resolver.resolve_version_ids(expected_ids)
+            manifest = _build_execution_manifest(
+                analysis_id,
+                row["question"],
+                row["skill"],
+                resolved_inputs,
+            )
+            manifest_json, manifest_sha256 = _serialize_manifest(manifest)
+            conn.execute(
+                "UPDATE analyses SET execution_manifest_json = ?, manifest_sha256 = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (manifest_json, manifest_sha256, analysis_id),
+            )
+            conn.commit()
             with materialize_execution_files(resolved_inputs, storage) as bundle:
-                manifest = _build_execution_manifest(
-                    analysis_id,
-                    row["question"],
-                    row["skill"],
-                    resolved_inputs,
-                    bundle,
-                )
                 result = execute_plan(
                     plan,
-                    analysis_id=analysis_id,
-                    execution_manifest=manifest,
-                    file_paths=[item.local_path for item in bundle.files],
+                    attached_input=AttachedExecutionInput(
+                        analysis_id=analysis_id,
+                        manifest=manifest,
+                        files=bundle.files,
+                    ),
                 )
         else:
             result = execute_plan(plan, analysis_id=analysis_id)
@@ -586,7 +644,10 @@ def _execute_analysis_background(analysis_id: str) -> None:
     except Exception as exc:
         conn.execute(
             "UPDATE analyses SET status = 'error', result_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-            (json.dumps({"error": _serialize_execution_error(exc)}, ensure_ascii=False), analysis_id),
+            (
+                json.dumps({"error": _serialize_execution_error(exc)}, ensure_ascii=False),
+                analysis_id,
+            ),
         )
         conn.commit()
     finally:
@@ -594,9 +655,10 @@ def _execute_analysis_background(analysis_id: str) -> None:
 
 
 def _row_to_response(row=None, analysis_id=None, status=None):
-    dataset_version_ids = _get_analysis_dataset_version_ids(
-        analysis_id or (row["id"] if row is not None else None)
-    )
+    if row is not None:
+        dataset_version_ids = _load_expected_dataset_version_ids(row)
+    else:
+        dataset_version_ids = _get_analysis_dataset_version_ids(analysis_id)
     dataset_attachments = _get_analysis_dataset_attachments(
         analysis_id or (row["id"] if row is not None else None)
     )

@@ -23,7 +23,10 @@ import math
 
 from dotenv import load_dotenv
 
-from agent.runtime.execution_manifest import ExecutionManifest
+from agent.runtime.execution_manifest import (
+    AttachedExecutionInput,
+    ExecutionManifest,
+)
 from agent.schemas import (
     SkillType,
     AnalysisPlan,
@@ -32,6 +35,11 @@ from agent.schemas import (
     ExecutionResult,
     Finding,
     HypothesisResult,
+)
+from application.datasets.execution import (
+    InvalidExecutionManifestError,
+    ResolvedDatasetInput,
+    serialize_untrusted_dataset_context,
 )
 from agent.planner import plan as generate_plan
 
@@ -964,39 +972,28 @@ def _execute_exemplar(plan: AnalysisPlan, max_retries: int = 2) -> ExecutionResu
 
 
 def _build_attached_profile_block(execution_manifest: ExecutionManifest) -> str:
-    lines = [
-        "## Attached datasets for this analysis",
-        "Use only these files and only these profiled columns.",
-        "Do not assume any global demo files, schemas, or hidden columns.",
-    ]
+    context = []
     for dataset in execution_manifest.datasets:
-        lines.append(
-            f"### {dataset.sandbox_filename} | dataset_version_id={dataset.dataset_version_id} | display_name={dataset.display_name} | format={dataset.format}"
-        )
-        for sheet in dataset.profile.sheets:
-            lines.append(
-                f"- sheet: {sheet.name} | row_count={sheet.row_count} | sampled={sheet.sampled}"
+        context.append(
+            ResolvedDatasetInput(
+                position=dataset.position,
+                dataset_id=dataset.dataset_id,
+                dataset_version_id=dataset.dataset_version_id,
+                display_name=dataset.display_name,
+                original_filename=dataset.original_filename,
+                format=dataset.format,
+                checksum_sha256=dataset.checksum_sha256,
+                storage_key="attached-manifest",
+                profile=dataset.profile,
+                status="ready",
             )
-            for warning in sheet.warnings:
-                lines.append(f"  - warning: {warning}")
-            for column in sheet.columns:
-                parts = [
-                    f"  - column: {column.name}",
-                    f"type={column.inferred_type}",
-                    f"null_ratio={column.null_ratio:.3f}",
-                ]
-                if column.unique_count is not None:
-                    parts.append(f"unique={column.unique_count}")
-                if column.min_value is not None:
-                    parts.append(f"min={column.min_value}")
-                if column.max_value is not None:
-                    parts.append(f"max={column.max_value}")
-                if column.examples:
-                    parts.append(f"examples={', '.join(column.examples)}")
-                lines.append(" | ".join(parts))
-        for warning in dataset.profile.warnings:
-            lines.append(f"- profile_warning: {warning}")
-    return "\n".join(lines)
+        )
+    return (
+        "## Attached datasets for this analysis\n"
+        "Use only these files and only these profiled columns.\n"
+        "Do not assume any global demo files, schemas, or hidden columns.\n\n"
+        f"{serialize_untrusted_dataset_context(context)}"
+    )
 
 
 def _build_attached_prompt(
@@ -1026,6 +1023,40 @@ def _build_attached_prompt(
     )
 
 
+def _validate_attached_execution_input(
+    plan: AnalysisPlan,
+    attached_input: AttachedExecutionInput,
+) -> None:
+    manifest = attached_input.manifest
+    files = attached_input.files
+
+    if manifest.analysis_id != attached_input.analysis_id:
+        raise InvalidExecutionManifestError("Manifest analysis_id does not match attached input")
+    if manifest.skill_id != plan.skill.value:
+        raise InvalidExecutionManifestError("Manifest skill_id does not match analysis plan")
+    if manifest.question != plan.question:
+        raise InvalidExecutionManifestError("Manifest question does not match analysis plan")
+    if len(manifest.datasets) != len(files):
+        raise InvalidExecutionManifestError("Manifest dataset count does not match materialized files")
+
+    expected_positions = list(range(len(manifest.datasets)))
+    actual_positions = [item.position for item in manifest.datasets]
+    if actual_positions != expected_positions:
+        raise InvalidExecutionManifestError("Manifest dataset positions must be contiguous and ordered")
+
+    seen_version_ids: set[str] = set()
+    for manifest_item, file_item in zip(manifest.datasets, files, strict=True):
+        if manifest_item.dataset_version_id in seen_version_ids:
+            raise InvalidExecutionManifestError("Manifest dataset_version_ids must be unique")
+        seen_version_ids.add(manifest_item.dataset_version_id)
+        if manifest_item.dataset_version_id != file_item.dataset_version_id:
+            raise InvalidExecutionManifestError("Materialized files do not match manifest order")
+        if os.path.basename(file_item.local_path) != manifest_item.sandbox_filename:
+            raise InvalidExecutionManifestError("Materialized filename does not match manifest sandbox filename")
+        if not os.path.exists(file_item.local_path):
+            raise InvalidExecutionManifestError("Materialized file path is missing")
+
+
 def _build_execution_metadata(
     execution_manifest: ExecutionManifest | None,
     analysis_id: str | None,
@@ -1051,21 +1082,23 @@ def _build_execution_metadata(
 def _execute_attached(
     plan: AnalysisPlan,
     *,
-    analysis_id: str | None,
-    execution_manifest: ExecutionManifest,
-    file_paths: list[str],
+    attached_input: AttachedExecutionInput,
     max_retries: int = 2,
 ) -> ExecutionResult:
     from agent.ci_runner import CIRunner
 
-    prompt = _build_attached_prompt(plan, execution_manifest)
+    _validate_attached_execution_input(plan, attached_input)
+    prompt = _build_attached_prompt(plan, attached_input.manifest)
     runner = CIRunner()
     errors: list[str] = []
     limitations = list(plan.limitations)
-    execution_metadata = _build_execution_metadata(execution_manifest, analysis_id)
+    execution_metadata = _build_execution_metadata(
+        attached_input.manifest,
+        attached_input.analysis_id,
+    )
     ci_result = runner.run_analysis(
         prompt=prompt,
-        file_paths=file_paths,
+        file_paths=[item.local_path for item in attached_input.files],
         max_retries=max_retries,
     )
     if ci_result.get("error"):
@@ -1108,16 +1141,13 @@ def execute(
     plan: AnalysisPlan,
     *,
     analysis_id: str | None = None,
-    execution_manifest: ExecutionManifest | None = None,
-    file_paths: list[str] | None = None,
+    attached_input: AttachedExecutionInput | None = None,
     max_retries: int = 2,
 ) -> ExecutionResult:
-    if execution_manifest is not None:
+    if attached_input is not None:
         return _execute_attached(
             plan,
-            analysis_id=analysis_id,
-            execution_manifest=execution_manifest,
-            file_paths=list(file_paths or []),
+            attached_input=attached_input,
             max_retries=max_retries,
         )
     return _execute_legacy(plan, max_retries=max_retries)
