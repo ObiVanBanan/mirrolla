@@ -31,6 +31,7 @@ from agent.planner import plan as generate_plan
 from agent.router import route_sync
 from agent.schemas import AnalysisPlan
 from api.datasets import build_datasets_router
+from application.datasets.models import Dataset, DatasetVersion
 from application.datasets.service import (
     DatasetNotFoundError,
     DatasetService,
@@ -148,12 +149,24 @@ class ReviseRequest(BaseModel):
     feedback: str = Field(..., description="Plan revision feedback")
 
 
+class AnalysisDatasetAttachmentResponse(BaseModel):
+    dataset_id: str
+    dataset_version_id: str
+    display_name: str
+    original_filename: str
+    format: str | None = None
+    status: str
+    checksum_sha256: str | None = None
+    created_at: str
+
+
 class AnalysisResponse(BaseModel):
     id: str
     question: str
     skill: Optional[str] = None
     status: str
     dataset_version_ids: list[str] = Field(default_factory=list)
+    dataset_attachments: list[AnalysisDatasetAttachmentResponse] = Field(default_factory=list)
     plan: Optional[dict] = None
     result: Optional[dict] = None
     created_at: str
@@ -209,6 +222,7 @@ app.include_router(
 )
 
 UI_INDEX = os.path.join(PROJECT_ROOT, "ui", "mirrolla_assistant.html")
+DATASET_WORKSPACE_JS = os.path.join(PROJECT_ROOT, "ui", "dataset_workspace.js")
 
 
 @app.get("/", include_in_schema=False)
@@ -216,6 +230,13 @@ async def main_page():
     if not os.path.exists(UI_INDEX):
         raise HTTPException(status_code=404, detail="ui/mirrolla_assistant.html not found")
     return FileResponse(UI_INDEX)
+
+
+@app.get("/ui/dataset_workspace.js", include_in_schema=False)
+async def dataset_workspace_script():
+    if not os.path.exists(DATASET_WORKSPACE_JS):
+        raise HTTPException(status_code=404, detail="ui/dataset_workspace.js not found")
+    return FileResponse(DATASET_WORKSPACE_JS, media_type="application/javascript")
 
 
 @app.post("/api/v1/analyses", response_model=AnalysisResponse)
@@ -303,9 +324,9 @@ def approve_analysis(
             (analysis_id,),
         )
         conn.commit()
+        row = conn.execute("SELECT * FROM analyses WHERE id = ?", (analysis_id,)).fetchone()
 
         if cursor.rowcount == 0:
-            row = conn.execute("SELECT * FROM analyses WHERE id = ?", (analysis_id,)).fetchone()
             if not row:
                 raise HTTPException(status_code=404, detail=f"Analysis {analysis_id} not found")
             raise HTTPException(
@@ -317,7 +338,7 @@ def approve_analysis(
     finally:
         conn.close()
 
-    return _row_to_response(row=None, analysis_id=analysis_id, status="executing")
+    return _row_to_response(row)
 
 
 @app.post("/api/v1/analyses/{analysis_id}/revise", response_model=AnalysisResponse)
@@ -394,10 +415,11 @@ def reject_analysis(
             (analysis_id,),
         )
         conn.commit()
+        row = conn.execute("SELECT * FROM analyses WHERE id = ?", (analysis_id,)).fetchone()
     finally:
         conn.close()
 
-    return _row_to_response(row=None, analysis_id=analysis_id, status="rejected")
+    return _row_to_response(row)
 
 
 @app.post("/api/v1/reports/management")
@@ -484,6 +506,9 @@ def _row_to_response(row=None, analysis_id=None, status=None):
     dataset_version_ids = _get_analysis_dataset_version_ids(
         analysis_id or (row["id"] if row is not None else None)
     )
+    dataset_attachments = _get_analysis_dataset_attachments(
+        analysis_id or (row["id"] if row is not None else None)
+    )
 
     if row is None and analysis_id:
         return AnalysisResponse(
@@ -492,6 +517,7 @@ def _row_to_response(row=None, analysis_id=None, status=None):
             skill=None,
             status=status or "unknown",
             dataset_version_ids=dataset_version_ids,
+            dataset_attachments=dataset_attachments,
             plan=None,
             result=None,
             created_at="",
@@ -507,6 +533,7 @@ def _row_to_response(row=None, analysis_id=None, status=None):
         skill=row["skill"],
         status=row["status"],
         dataset_version_ids=dataset_version_ids,
+        dataset_attachments=dataset_attachments,
         plan=plan,
         result=result,
         created_at=str(row["created_at"]) if row["created_at"] else "",
@@ -521,6 +548,43 @@ def _get_analysis_dataset_version_ids(analysis_id: str | None) -> list[str]:
     repository = app.state.dataset_repository_factory()
     selections = repository.list_analysis_dataset_selections(analysis_id)
     return [selection.dataset_version_id for selection in selections]
+
+
+def _get_analysis_dataset_attachments(
+    analysis_id: str | None,
+) -> list[AnalysisDatasetAttachmentResponse]:
+    if not analysis_id:
+        return []
+
+    repository = app.state.dataset_repository_factory()
+    attachments: list[AnalysisDatasetAttachmentResponse] = []
+    for selection in repository.list_analysis_dataset_selections(analysis_id):
+        version = repository.get_dataset_version(selection.dataset_version_id)
+        if version is None:
+            continue
+
+        dataset = repository.get_dataset(version.dataset_id)
+        if dataset is None:
+            continue
+
+        attachments.append(_build_analysis_dataset_attachment(dataset, version))
+    return attachments
+
+
+def _build_analysis_dataset_attachment(
+    dataset: Dataset,
+    version: DatasetVersion,
+) -> AnalysisDatasetAttachmentResponse:
+    return AnalysisDatasetAttachmentResponse(
+        dataset_id=dataset.id,
+        dataset_version_id=version.id,
+        display_name=dataset.display_name,
+        original_filename=version.original_filename,
+        format=version.format,
+        status=version.status,
+        checksum_sha256=version.checksum_sha256,
+        created_at=version.created_at.isoformat(),
+    )
 
 
 if __name__ == "__main__":
