@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from agent.schemas import AnalysisPlan, ExecutionResult, PeriodSpec, SkillType
+from agent.schemas import AnalysisPlan, ExecutionResult, Hypothesis, PeriodSpec, SkillType
 from api import main as api_main
 from application.datasets.models import (
     Dataset,
@@ -117,7 +117,7 @@ class ApiTransitionTests(unittest.TestCase):
             "product_codes": [],
             "period_days": 14,
         })()
-        generate_plan.side_effect = lambda question, routing=None, dataset_context=None: self._plan(question)
+        generate_plan.side_effect = lambda question, routing=None, dataset_context=None, revision_feedback=None: self._plan(question)
 
         created = self.client.post(
             "/api/v1/analyses",
@@ -138,7 +138,7 @@ class ApiTransitionTests(unittest.TestCase):
             "product_codes": [],
             "period_days": 14,
         })()
-        generate_plan.side_effect = lambda question, routing=None, dataset_context=None: self._plan(question)
+        generate_plan.side_effect = lambda question, routing=None, dataset_context=None, revision_feedback=None: self._plan(question)
 
         created = self.client.post("/api/v1/analyses", json={"question": "Почему упали продажи?"})
         self.assertEqual(created.status_code, 200)
@@ -158,13 +158,59 @@ class ApiTransitionTests(unittest.TestCase):
 
     @patch("api.main.generate_plan")
     @patch("api.main.route_sync")
+    def test_revise_uses_free_form_feedback_to_rebuild_plan(self, route_sync, generate_plan):
+        route_sync.return_value = type("Routing", (), {
+            "skill": SkillType.SALES_DECLINE,
+            "product_codes": [],
+            "period_days": 14,
+        })()
+
+        def fake_generate_plan(question, routing=None, dataset_context=None, revision_feedback=None):
+            plan = self._plan(question)
+            if revision_feedback:
+                plan.hypotheses = [
+                    Hypothesis(
+                        id="H1",
+                        title="Updated from feedback",
+                        datasets=["available-data"],
+                        method=revision_feedback,
+                        helpers=[],
+                    )
+                ]
+                plan.limitations = [f"Manager revision request: {revision_feedback}"]
+            return AnalysisPlan.model_validate(plan)
+
+        generate_plan.side_effect = fake_generate_plan
+
+        created = self.client.post("/api/v1/analyses", json={"question": "ффвыф"})
+        analysis_id = created.json()["id"]
+
+        revised = self.client.post(
+            f"/api/v1/analyses/{analysis_id}/revise",
+            json={"feedback": "проанализировать и вывести уникальные артикулы"},
+        )
+
+        self.assertEqual(revised.status_code, 200)
+        payload = revised.json()
+        self.assertEqual(payload["status"], "awaiting_approval")
+        self.assertEqual(
+            payload["plan"]["limitations"][0],
+            "Manager revision request: проанализировать и вывести уникальные артикулы",
+        )
+        self.assertEqual(
+            payload["plan"]["hypotheses"][0]["method"],
+            "проанализировать и вывести уникальные артикулы",
+        )
+
+    @patch("api.main.generate_plan")
+    @patch("api.main.route_sync")
     def test_create_persists_selected_dataset_version_ids(self, route_sync, generate_plan):
         route_sync.return_value = type("Routing", (), {
             "skill": SkillType.SALES_DECLINE,
             "product_codes": [],
             "period_days": 14,
         })()
-        generate_plan.side_effect = lambda question, routing=None, dataset_context=None: self._plan(question)
+        generate_plan.side_effect = lambda question, routing=None, dataset_context=None, revision_feedback=None: self._plan(question)
 
         upload = self.client.post(
             "/api/v1/workspaces/default/datasets",
@@ -208,7 +254,7 @@ class ApiTransitionTests(unittest.TestCase):
             "product_codes": [],
             "period_days": 14,
         })()
-        generate_plan.side_effect = lambda question, routing=None, dataset_context=None: self._plan(question)
+        generate_plan.side_effect = lambda question, routing=None, dataset_context=None, revision_feedback=None: self._plan(question)
 
         repository = self.client.app.state.dataset_repository_factory()
         now = datetime.now(UTC)
@@ -253,7 +299,7 @@ class ApiTransitionTests(unittest.TestCase):
             "product_codes": [],
             "period_days": 14,
         })()
-        generate_plan.side_effect = lambda question, routing=None, dataset_context=None: self._plan(question)
+        generate_plan.side_effect = lambda question, routing=None, dataset_context=None, revision_feedback=None: self._plan(question)
 
         repository = self.client.app.state.dataset_repository_factory()
         now = datetime.now(UTC)
@@ -369,7 +415,7 @@ class ApiTransitionTests(unittest.TestCase):
             "product_codes": [],
             "period_days": 14,
         })()
-        generate_plan.side_effect = lambda question, routing=None, dataset_context=None: self._plan(question)
+        generate_plan.side_effect = lambda question, routing=None, dataset_context=None, revision_feedback=None: self._plan(question)
 
         first_upload = self.client.post(
             "/api/v1/workspaces/default/datasets",
@@ -422,7 +468,7 @@ class ApiTransitionTests(unittest.TestCase):
             "product_codes": [],
             "period_days": 14,
         })()
-        generate_plan.side_effect = lambda question, routing=None, dataset_context=None: self._plan(question)
+        generate_plan.side_effect = lambda question, routing=None, dataset_context=None, revision_feedback=None: self._plan(question)
 
         first_upload = self.client.post(
             "/api/v1/workspaces/default/datasets",
@@ -498,7 +544,7 @@ class ApiTransitionTests(unittest.TestCase):
             "product_codes": [],
             "period_days": 14,
         })()
-        generate_plan.side_effect = lambda question, routing=None, dataset_context=None: self._plan(question)
+        generate_plan.side_effect = lambda question, routing=None, dataset_context=None, revision_feedback=None: self._plan(question)
 
         upload = self.client.post(
             "/api/v1/workspaces/default/datasets",
@@ -540,7 +586,7 @@ class ApiTransitionTests(unittest.TestCase):
             "product_codes": [],
             "period_days": 14,
         })()
-        generate_plan.side_effect = lambda question, routing=None, dataset_context=None: self._plan(question)
+        generate_plan.side_effect = lambda question, routing=None, dataset_context=None, revision_feedback=None: self._plan(question)
 
         upload = self.client.post(
             "/api/v1/workspaces/default/datasets",
@@ -577,7 +623,7 @@ class ApiTransitionTests(unittest.TestCase):
             "product_codes": [],
             "period_days": 14,
         })()
-        generate_plan.side_effect = lambda question, routing=None, dataset_context=None: self._plan(question)
+        generate_plan.side_effect = lambda question, routing=None, dataset_context=None, revision_feedback=None: self._plan(question)
 
         upload = self.client.post(
             "/api/v1/workspaces/default/datasets",
@@ -610,7 +656,7 @@ class ApiTransitionTests(unittest.TestCase):
             "product_codes": [],
             "period_days": 14,
         })()
-        generate_plan.side_effect = lambda question, routing=None, dataset_context=None: self._plan(question)
+        generate_plan.side_effect = lambda question, routing=None, dataset_context=None, revision_feedback=None: self._plan(question)
 
         first = self.client.post(
             "/api/v1/workspaces/default/datasets",
@@ -653,7 +699,7 @@ class ApiTransitionTests(unittest.TestCase):
             "product_codes": [],
             "period_days": 14,
         })()
-        generate_plan.side_effect = lambda question, routing=None, dataset_context=None: self._plan(question)
+        generate_plan.side_effect = lambda question, routing=None, dataset_context=None, revision_feedback=None: self._plan(question)
 
         upload = self.client.post(
             "/api/v1/workspaces/default/datasets",
@@ -703,7 +749,7 @@ class ApiTransitionTests(unittest.TestCase):
             "product_codes": [],
             "period_days": 14,
         })()
-        generate_plan.side_effect = lambda question, routing=None, dataset_context=None: self._plan(question)
+        generate_plan.side_effect = lambda question, routing=None, dataset_context=None, revision_feedback=None: self._plan(question)
 
         upload = self.client.post(
             "/api/v1/workspaces/default/datasets",

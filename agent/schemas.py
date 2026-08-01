@@ -4,7 +4,7 @@ Pydantic models shared across router, planner, and executor.
 
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class SkillType(str, Enum):
@@ -14,12 +14,30 @@ class SkillType(str, Enum):
     REVIEWS_PRICING = "reviews-and-pricing"
 
 
+class AnalysisMode(str, Enum):
+    GENERAL = "general"
+    SPECIALIZED = "specialized"
+
+
 class Question(BaseModel):
     text: str = Field(..., description="Manager question in Russian")
 
 
 class RoutingResult(BaseModel):
-    skill: SkillType = Field(..., description="Selected analytical skill")
+    analysis_mode: AnalysisMode | None = Field(
+        default=None,
+        description="General or specialized analysis mode",
+    )
+    skill: SkillType | None = Field(
+        default=None,
+        description="Selected analytical skill when specialized analysis is required",
+    )
+    skill_confidence: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="Confidence for the selected skill",
+    )
     product_codes: list[str] = Field(
         default_factory=list,
         description="Product codes found in the question",
@@ -30,6 +48,25 @@ class RoutingResult(BaseModel):
         le=365,
         description="Analysis period in days",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _infer_analysis_mode(cls, data):
+        if not isinstance(data, dict):
+            return data
+        if data.get("analysis_mode") is None:
+            data["analysis_mode"] = (
+                AnalysisMode.SPECIALIZED if data.get("skill") is not None else AnalysisMode.GENERAL
+            )
+        return data
+
+    @model_validator(mode="after")
+    def _validate_skill_consistency(self):
+        if self.analysis_mode == AnalysisMode.GENERAL and self.skill is not None:
+            raise ValueError("General analysis must not specify a skill")
+        if self.analysis_mode == AnalysisMode.SPECIALIZED and self.skill is None:
+            raise ValueError("Specialized analysis must specify a skill")
+        return self
 
 
 class PeriodSpec(BaseModel):
@@ -60,7 +97,14 @@ class Hypothesis(BaseModel):
 
 
 class AnalysisPlan(BaseModel):
-    skill: SkillType = Field(..., description="Analytical skill")
+    analysis_mode: AnalysisMode | None = Field(
+        default=None,
+        description="General or specialized analysis mode",
+    )
+    skill: SkillType | None = Field(
+        default=None,
+        description="Analytical skill when specialized analysis is required",
+    )
     question: str = Field(..., description="Original manager question")
     product_codes: list[str] = Field(
         default_factory=list,
@@ -75,6 +119,25 @@ class AnalysisPlan(BaseModel):
         default_factory=list,
         description="Known data limitations",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _infer_analysis_mode(cls, data):
+        if not isinstance(data, dict):
+            return data
+        if data.get("analysis_mode") is None:
+            data["analysis_mode"] = (
+                AnalysisMode.SPECIALIZED if data.get("skill") is not None else AnalysisMode.GENERAL
+            )
+        return data
+
+    @model_validator(mode="after")
+    def _validate_skill_consistency(self):
+        if self.analysis_mode == AnalysisMode.GENERAL and self.skill is not None:
+            raise ValueError("General analysis plan must not specify a skill")
+        if self.analysis_mode == AnalysisMode.SPECIALIZED and self.skill is None:
+            raise ValueError("Specialized analysis plan must specify a skill")
+        return self
 
 
 class HypothesisResult(BaseModel):
@@ -129,7 +192,14 @@ class ExecutionMetadata(BaseModel):
 
 class ExecutionResult(BaseModel):
     question: str = Field(..., description="Original manager question")
-    skill: SkillType = Field(..., description="Selected analytical skill")
+    analysis_mode: AnalysisMode | None = Field(
+        default=None,
+        description="General or specialized analysis mode",
+    )
+    skill: SkillType | None = Field(
+        default=None,
+        description="Selected analytical skill",
+    )
     answer_status: str = Field(
         "answered",
         description="answered, partial, or not_enough_data",
@@ -150,6 +220,10 @@ class ExecutionResult(BaseModel):
         "",
         description="Human-readable final answer",
     )
+    answer: str = Field(
+        "",
+        description="Direct answer returned to the user",
+    )
     limitations: list[str] = Field(
         default_factory=list,
         description="Limitations of the analysis",
@@ -166,3 +240,26 @@ class ExecutionResult(BaseModel):
         default=None,
         description="Resolved dataset provenance for the execution",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _infer_analysis_mode(cls, data):
+        if not isinstance(data, dict):
+            return data
+        if data.get("analysis_mode") is None:
+            data["analysis_mode"] = (
+                AnalysisMode.SPECIALIZED if data.get("skill") is not None else AnalysisMode.GENERAL
+            )
+        return data
+
+    @model_validator(mode="after")
+    def _validate_skill_consistency(self):
+        if self.analysis_mode == AnalysisMode.GENERAL and self.skill is not None:
+            raise ValueError("General execution result must not specify a skill")
+        if self.analysis_mode == AnalysisMode.SPECIALIZED and self.skill is None:
+            raise ValueError("Specialized execution result must specify a skill")
+        if not self.answer and self.summary:
+            self.answer = self.summary
+        if self.analysis_mode == AnalysisMode.GENERAL and not (self.answer or self.summary):
+            raise ValueError("General execution result must include an answer or summary")
+        return self

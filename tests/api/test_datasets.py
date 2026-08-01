@@ -138,6 +138,23 @@ class DatasetApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 404)
 
+    def test_delete_last_version_hides_dataset_from_list(self):
+        upload = self.client.post(
+            "/api/v1/workspaces/default/datasets",
+            files={"file": ("mapping_results.csv", b"col\n1\n", "text/csv")},
+            data={"display_name": "mapping_results"},
+        )
+        self.assertEqual(upload.status_code, 200)
+        version_id = upload.json()["version"]["id"]
+        self._wait_for_version_status(version_id, {"ready"})
+
+        deleted = self.client.delete(f"/api/v1/dataset-versions/{version_id}")
+        self.assertEqual(deleted.status_code, 200)
+
+        listed = self.client.get("/api/v1/workspaces/default/datasets")
+        self.assertEqual(listed.status_code, 200)
+        self.assertEqual(listed.json()["datasets"], [])
+
     def test_get_profile_returns_issues(self):
         upload = self.client.post(
             "/api/v1/workspaces/default/datasets",

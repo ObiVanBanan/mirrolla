@@ -10,13 +10,12 @@ import sys
 
 from dotenv import load_dotenv
 
+from agent.router import route_sync
+from agent.schemas import AnalysisMode, AnalysisPlan, Hypothesis, PeriodSpec, RoutingResult, SkillType
 from application.datasets.execution import (
     ResolvedDatasetInput,
     serialize_untrusted_dataset_context,
 )
-
-from agent.router import route_sync
-from agent.schemas import AnalysisPlan, Hypothesis, PeriodSpec, RoutingResult, SkillType
 
 load_dotenv()
 
@@ -27,16 +26,18 @@ PRODUCTS_PATH = os.path.join("data", "prepared", "products.json")
 
 BASE_PROMPT = """Ты — планировщик аналитического анализа для Mirrolla.
 
-Твоя задача: по вопросу менеджера, выбранному skill и периоду сформировать план анализа.
+Сформируй план только из вопроса пользователя, режима анализа и доступного контекста.
 
-Главные правила:
-- гипотезы должны соответствовать доступным данным;
-- если прикреплены файлы, используй только их профили;
-- не выдумывай отсутствующие датасеты, листы, колонки и строки;
-- если данных не хватает, фиксируй это в limitations.
+Правила:
+- работай только с приложенными DatasetVersion, если они переданы;
+- используй только реально существующие файлы, листы и колонки из профилей;
+- не придумывай demo-файлы, несуществующие колонки и бизнес-контекст;
+- определи минимальный набор действий, нужный для ответа;
+- для простого запроса достаточно одной гипотезы;
+- если данных не хватает, явно укажи это в limitations.
 """
 
-LEGACY_DATASET_BLOCK = """## Доступные demo datasets
+LEGACY_DATASET_BLOCK = """## Available demo datasets
 - sales
 - stocks
 - reviews_wb
@@ -92,29 +93,32 @@ def _build_messages(
     question: str,
     routing: RoutingResult,
     dataset_context: list[ResolvedDatasetInput] | None = None,
+    revision_feedback: str | None = None,
 ) -> list[dict]:
-    skill_md = _load_skill_md(routing.skill)
+    skill_md = _load_skill_md(routing.skill) if routing.skill is not None else ""
+    skill_label = routing.skill.value if routing.skill is not None else "none"
     if dataset_context:
         system = (
             f"{BASE_PROMPT}\n\n"
-            f"## Selected skill\n{routing.skill.value}\n\n"
-            "## Attached planning mode\n"
-            "Build the plan only from attached dataset profiles and the user question.\n"
-            "Do not assume any hidden demo datasets, products catalog, or fixed time range.\n\n"
-            f"{_build_dataset_context_block(dataset_context)}"
+            f"## Analysis mode\n{routing.analysis_mode.value}\n\n"
+            + "## Attached planning mode\n"
+            + "Build the plan only from attached dataset profiles and the user question.\n"
+            + "Do not assume any hidden demo datasets, products catalog, or fixed time range.\n\n"
+            + _build_dataset_context_block(dataset_context)
         )
     else:
         system = (
             f"{BASE_PROMPT}\n\n"
-            f"## Selected skill\n{routing.skill.value}\n\n"
-            f"## Skill instructions\n{skill_md}\n\n"
-            f"{LEGACY_DATASET_BLOCK}"
+            f"## Analysis mode\n{routing.analysis_mode.value}\n\n"
+            + (f"## Skill instructions\n{skill_md}\n\n" if skill_md else "")
+            + (LEGACY_DATASET_BLOCK if routing.skill is not None else "")
         )
 
     user = "\n".join(
         [
             f"Вопрос менеджера: {question}",
-            f"Skill: {routing.skill.value}",
+            f"Analysis mode: {routing.analysis_mode.value}",
+            f"Skill: {skill_label}",
             (
                 f"Коды товаров: {', '.join(routing.product_codes)}"
                 if routing.product_codes
@@ -198,75 +202,29 @@ def _fallback_attached_plan(
     extra_warnings: list[str],
     dataset_context: list[ResolvedDatasetInput],
 ) -> AnalysisPlan:
-    hypotheses: list[Hypothesis] = []
-    seen_temporal = False
-    seen_numeric = False
-    seen_entity = False
-
-    for item in dataset_context:
-        for sheet in item.profile.sheets:
-            for column in sheet.columns:
-                if column.inferred_type == "datetime":
-                    seen_temporal = True
-                if column.inferred_type in {"integer", "number"}:
-                    seen_numeric = True
-                lowered = column.name.lower()
-                if "sku" in lowered or "product" in lowered or "name" in lowered:
-                    seen_entity = True
-
-    if seen_temporal and seen_numeric:
-        hypotheses.append(
-            Hypothesis(
-                id="H1",
-                title="Временная динамика метрик",
-                datasets=["attached"],
-                method="Проверить динамику доступных числовых показателей по временным полям.",
-                helpers=[],
-            )
-        )
-    if seen_entity and seen_numeric:
-        hypotheses.append(
-            Hypothesis(
-                id="H2",
-                title="Сравнение по сущностям",
-                datasets=["attached"],
-                method="Сопоставить числовые показатели между товарами или группами.",
-                helpers=[],
-            )
-        )
-    if seen_numeric:
-        hypotheses.append(
-            Hypothesis(
-                id="H3",
-                title="Аномалии в числовых полях",
-                datasets=["attached"],
-                method="Найти резкие отклонения и выбросы в доступных числовых полях.",
-                helpers=[],
-            )
-        )
-    if not hypotheses:
-        hypotheses.append(
-            Hypothesis(
-                id="H1",
-                title="Структурный обзор данных",
-                datasets=["attached"],
-                method="Проанализировать доступную структуру файлов и зафиксировать ограничения.",
-                helpers=[],
-            )
-        )
-
-    limitations = list(extra_warnings)
-    limitations.append(
-        "План построен только по профилям прикреплённых файлов. Отсутствующие датасеты и концепты не предполагаются."
-    )
-
+    dataset_ids = [item.dataset_version_id for item in dataset_context]
     return AnalysisPlan(
+        analysis_mode=routing.analysis_mode,
         skill=routing.skill,
         question=question,
         product_codes=routing.product_codes,
         period=PeriodSpec(current_days=routing.period_days, comparison="previous_equal_period"),
-        hypotheses=hypotheses,
-        limitations=limitations,
+        hypotheses=[
+            Hypothesis(
+                id="H1",
+                title="Выполнить запрошенную операцию над прикреплённым датасетом",
+                datasets=dataset_ids,
+                method=(
+                    "Прочитать выбранные версии, проверить реальные колонки и выполнить "
+                    "фильтрацию, агрегацию, подсчёт или проверку, указанную в вопросе."
+                ),
+                helpers=[],
+            )
+        ],
+        limitations=[
+            *extra_warnings,
+            "План построен только по профилям прикреплённых файлов без использования demo-датасетов.",
+        ],
     )
 
 
@@ -280,12 +238,27 @@ def _fallback_plan(
         return _fallback_attached_plan(question, routing, extra_warnings, dataset_context)
 
     limitations = list(extra_warnings)
-    if routing.period_days > 92:
+    if routing.period_days > 92 and routing.skill is not None:
         limitations.append(
             f"Запрошенный период ({routing.period_days} дней) превышает доступные demo-данные (92 дня)."
         )
 
+    hypotheses = (
+        _build_legacy_hypotheses(routing.skill)
+        if routing.skill is not None
+        else [
+            Hypothesis(
+                id="H1",
+                title="Ответить на вопрос по доступным данным",
+                datasets=["available-data"],
+                method="Выполнить минимально необходимую операцию для ответа на вопрос.",
+                helpers=[],
+            )
+        ]
+    )
+
     return AnalysisPlan(
+        analysis_mode=routing.analysis_mode,
         skill=routing.skill,
         question=question,
         product_codes=routing.product_codes,
@@ -293,7 +266,7 @@ def _fallback_plan(
             current_days=routing.period_days,
             comparison="year_over_year" if routing.period_days >= 180 else "previous_equal_period",
         ),
-        hypotheses=_build_legacy_hypotheses(routing.skill),
+        hypotheses=hypotheses,
         limitations=limitations,
     )
 
@@ -302,29 +275,67 @@ def plan(
     question: str,
     routing: RoutingResult | None = None,
     dataset_context: list[ResolvedDatasetInput] | None = None,
+    revision_feedback: str | None = None,
 ) -> AnalysisPlan:
     if routing is None:
-        routing = route_sync(question)
+        routing = route_sync(question, dataset_context=dataset_context)
 
     warnings = _validate_product_codes(
         routing.product_codes,
         allow_catalog_lookup=not dataset_context,
     )
 
+    planning_question = question
+    if revision_feedback:
+        planning_question = (
+            f"{question}\n\n"
+            f"Manager revision request: {revision_feedback}"
+        )
+
     if not API_KEY:
-        return _fallback_plan(question, routing, warnings, dataset_context=dataset_context)
+        result = _fallback_plan(planning_question, routing, warnings, dataset_context=dataset_context)
+        result.question = question
+        if revision_feedback:
+            if result.hypotheses:
+                result.hypotheses[0].method = (
+                    f"{result.hypotheses[0].method} "
+                    f"Additional manager revision request: {revision_feedback}."
+                )
+            result.limitations.insert(0, f"Manager revision request: {revision_feedback}")
+        return result
 
     try:
         from langchain_openai import ChatOpenAI
 
         llm = ChatOpenAI(model=MODEL_NAME, api_key=API_KEY, temperature=0)
         structured_llm = llm.with_structured_output(AnalysisPlan)
-        result = structured_llm.invoke(_build_messages(question, routing, dataset_context))
+        result = structured_llm.invoke(_build_messages(planning_question, routing, dataset_context))
         if warnings:
             result.limitations.extend(warnings)
+        if revision_feedback:
+            result.question = question
+            if result.hypotheses:
+                result.hypotheses[0].method = (
+                    f"{result.hypotheses[0].method} "
+                    f"Additional manager revision request: {revision_feedback}."
+                )
+            result.limitations.insert(0, f"Manager revision request: {revision_feedback}")
+        if result.analysis_mode is None:
+            result.analysis_mode = routing.analysis_mode
+        if result.skill is None and routing.analysis_mode == AnalysisMode.SPECIALIZED:
+            result.skill = routing.skill
         return result
     except Exception:
-        return _fallback_plan(question, routing, warnings, dataset_context=dataset_context)
+        result = _fallback_plan(planning_question, routing, warnings, dataset_context=dataset_context)
+        result.question = question
+        if revision_feedback:
+            if result.hypotheses:
+                result.hypotheses[0].method = (
+                    f"{result.hypotheses[0].method} "
+                    f"Additional manager revision request: {revision_feedback}."
+                )
+            result.limitations.insert(0, f"Manager revision request: {revision_feedback}")
+        return result
 
 
 def main() -> None:

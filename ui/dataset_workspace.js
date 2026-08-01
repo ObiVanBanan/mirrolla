@@ -1,1175 +1,606 @@
-(function (global) {
+(() => {
   'use strict';
 
-  const DEFAULT_WORKSPACE_ID = 'default';
-  const MAX_PARALLEL_UPLOADS = 3;
-  const MAX_CONSECUTIVE_POLL_ERRORS = 5;
-  const DEFAULT_POLL_INTERVAL_MS = 2000;
-  const STORAGE_KEYS = {
-    draftSelectedVersionIds: 'mirrolla.dataset.draftSelectedVersionIds',
-    workspaceId: 'mirrolla.dataset.workspaceId'
+  const config = window.MIRROLLA_CONFIG || {};
+  const apiBase = String(config.apiBase || '').replace(/\/$/, '');
+  const workspaceId = config.workspaceId || 'default';
+  const maxParallelUploads = Number(config.maxParallelUploads || 3);
+  const maxUploadBytes = Number(config.maxUploadBytes || 200 * 1024 * 1024);
+  const pollIntervalMs = Number(config.pollIntervalMs || 1500);
+  const allowedExtensions = new Set(['csv', 'xlsx', 'json']);
+  const terminalStatuses = new Set(['ready', 'invalid', 'deleted']);
+
+  const state = {
+    initialized: false,
+    loading: false,
+    datasets: [],
+    versionsById: new Map(),
+    draftSelectedVersionIds: loadSelectedIds(),
+    uploadQueue: [],
+    activeUploads: 0,
+    pollers: new Map(),
+    listeners: new Set()
   };
 
-  function escapeHtml(value) {
-    if (value == null) return '';
-    return String(value).replace(/[&<>"']/g, character => ({
-      '&': '&amp;',
-      '<': '&lt;',
-      '>': '&gt;',
-      '"': '&quot;',
-      "'": '&#39;'
-    })[character]);
+  const endpoints = {
+    listDatasets: [
+      `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/datasets`,
+      `/api/v1/datasets?workspace_id=${encodeURIComponent(workspaceId)}`
+    ],
+    upload: [
+      `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/datasets`,
+      `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/datasets/upload`,
+      '/api/v1/datasets/upload'
+    ],
+    getVersion: id => [`/api/v1/dataset-versions/${encodeURIComponent(id)}`],
+    getProfile: id => [`/api/v1/dataset-versions/${encodeURIComponent(id)}/profile`],
+    deleteVersion: id => [`/api/v1/dataset-versions/${encodeURIComponent(id)}`]
+  };
+
+  let refs = null;
+
+  function authHeaders() {
+    const key = window.MIRROLLA_API_KEY || localStorage.getItem('mirrolla_api_key');
+    return key ? { 'X-API-Key': key } : {};
   }
 
-  function escapeAttribute(value) {
-    return escapeHtml(value).replace(/`/g, '&#96;');
-  }
-
-  function pluralize(number, one, few, many) {
-    const mod10 = number % 10;
-    const mod100 = number % 100;
-    if (mod10 === 1 && mod100 !== 11) return one;
-    if ([2, 3, 4].includes(mod10) && ![12, 13, 14].includes(mod100)) return few;
-    return many;
-  }
-
-  function formatBytes(value) {
-    const bytes = Number(value || 0);
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  }
-
-  function stemFilename(name) {
-    return String(name || 'dataset').replace(/\.[^.]+$/, '') || 'dataset';
-  }
-
-  function getFileExtension(name) {
-    const match = String(name || '').toLowerCase().match(/(\.[^.]+)$/);
-    return match ? match[1] : '';
-  }
-
-  function isAcceptedUploadFile(file) {
-    return ['.csv', '.xlsx', '.json'].includes(getFileExtension(file?.name));
-  }
-
-  function splitAcceptedUploadFiles(files) {
-    const accepted = [];
-    const rejected = [];
-    Array.from(files || []).forEach(file => {
-      if (isAcceptedUploadFile(file)) accepted.push(file);
-      else rejected.push(file);
-    });
-    return {accepted, rejected};
-  }
-
-  function normalizeVersionIdList(values) {
-    if (!Array.isArray(values)) return [];
-    const seen = new Set();
-    const ids = [];
-    values.forEach(value => {
-      if (typeof value !== 'string') return;
-      if (seen.has(value)) return;
-      seen.add(value);
-      ids.push(value);
-    });
-    return ids;
-  }
-
-  function loadStoredDraftSelection(storage) {
-    try {
-      const raw = storage?.getItem(STORAGE_KEYS.draftSelectedVersionIds);
-      return normalizeVersionIdList(raw ? JSON.parse(raw) : []);
-    } catch (_) {
-      return [];
-    }
-  }
-
-  function loadStoredWorkspaceId(storage) {
-    try {
-      return storage?.getItem(STORAGE_KEYS.workspaceId) || DEFAULT_WORKSPACE_ID;
-    } catch (_) {
-      return DEFAULT_WORKSPACE_ID;
-    }
-  }
-
-  function saveStoredDraftSelection(storage, ids) {
-    try {
-      storage?.setItem(STORAGE_KEYS.draftSelectedVersionIds, JSON.stringify(ids));
-    } catch (_) {
-      // Ignore localStorage quota failures.
-    }
-  }
-
-  function saveStoredWorkspaceId(storage, workspaceId) {
-    try {
-      storage?.setItem(STORAGE_KEYS.workspaceId, workspaceId || DEFAULT_WORKSPACE_ID);
-    } catch (_) {
-      // Ignore localStorage quota failures.
-    }
-  }
-
-  function createInitialDatasetWorkspaceState(options = {}) {
-    return {
-      workspaceId: options.workspaceId || DEFAULT_WORKSPACE_ID,
-      initialized: false,
-      initializationError: null,
-      datasets: Array.isArray(options.datasets) ? options.datasets : [],
-      draftSelectedVersionIds: normalizeVersionIdList(options.draftSelectedVersionIds),
-      viewedAnalysisVersionIds: normalizeVersionIdList(options.viewedAnalysisVersionIds),
-      selectionMode: options.selectionMode === 'analysis' ? 'analysis' : 'draft',
-      uploads: Array.isArray(options.uploads) ? options.uploads : [],
-      profileCache: options.profileCache instanceof Map ? options.profileCache : new Map(),
-      drawerOpen: Boolean(options.drawerOpen),
-      filePickerContext: null,
-      bannerMessage: '',
-      retryableVersionIds: new Set()
-    };
-  }
-
-  function buildVersionIndex(datasets) {
-    const index = new Map();
-    (datasets || []).forEach(dataset => {
-      (dataset.versions || []).forEach(version => {
-        index.set(version.id, {dataset, version});
+  async function requestCandidates(candidates, options = {}) {
+    let lastError = null;
+    for (const path of candidates) {
+      const response = await fetch(`${apiBase}${path}`, {
+        ...options,
+        headers: { ...authHeaders(), ...(options.headers || {}) }
       });
-    });
-    return index;
-  }
-
-  function getVersionEntriesByIds(datasets, ids) {
-    const index = buildVersionIndex(datasets);
-    return normalizeVersionIdList(ids)
-      .map(id => index.get(id))
-      .filter(Boolean);
-  }
-
-  function getDraftReadyVersionIds(state) {
-    if (!state.initialized || state.initializationError) {
-      return [];
-    }
-
-    return getVersionEntriesByIds(state.datasets, state.draftSelectedVersionIds)
-      .filter(entry => entry.version.status === 'ready')
-      .map(entry => entry.version.id);
-  }
-
-  function shouldShowCancel(upload) {
-    return upload && (upload.status === 'queued' || upload.status === 'uploading');
-  }
-
-  function createUploadItems(files, context = null, createId = defaultCreateUploadId) {
-    const safeFiles = Array.from(files || []);
-    if (!safeFiles.length) {
-      return {items: [], error: ''};
-    }
-
-    if (context?.mode === 'add-version' && safeFiles.length !== 1) {
-      return {items: [], error: 'Для новой версии выберите один файл.'};
-    }
-
-    return {
-      items: safeFiles.map(file => ({
-        id: createId(),
-        file,
-        datasetId: context?.datasetId || null,
-        displayName: stemFilename(file.name),
-        progress: 0,
-        status: 'queued',
-        message: 'Ожидает свободный слот',
-        abortController: null,
-        versionId: null,
-        retryable: false,
-        canceled: false
-      })),
-      error: ''
-    };
-  }
-
-  function defaultCreateUploadId() {
-    return `upload_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-  }
-
-  function sanitizeUploadError(status, detail) {
-    if (status === 413) {
-      return 'Файл превышает допустимый размер загрузки.';
-    }
-    if (status === 415) {
-      return 'Поддерживаются только файлы .csv, .json и .xlsx.';
-    }
-    if (status === 400 && typeof detail === 'string' && detail.toLowerCase().includes('empty')) {
-      return 'Файл пустой. Нужны данные хотя бы с одной строкой.';
-    }
-    if (status === 404) {
-      return 'Workspace или версия набора не найдены.';
-    }
-    if (typeof detail === 'string' && detail) {
-      return detail;
-    }
-    return `Не удалось загрузить файл (${status})`;
-  }
-
-  function describeVersionStatus(status) {
-    switch (status) {
-      case 'ready':
-        return 'Файл готов к анализу';
-      case 'invalid':
-        return 'Файл не прошёл проверку';
-      case 'deleted':
-        return 'Версия удалена';
-      default:
-        return 'Профилирование выполняется';
-    }
-  }
-
-  function describeDatasetIssue(issue) {
-    const code = String(issue?.code || '').toLowerCase();
-    switch (code) {
-      case 'dataset_has_no_rows':
-        return 'В файле нет строк данных';
-      case 'dataset_has_no_object_rows':
-        return 'JSON не содержит объектных записей';
-      case 'dataset_has_no_sheets':
-        return 'В XLSX нет заполненных листов';
-      case 'profile_runtime_error':
-        return 'Профилирование завершилось ошибкой';
-      default:
-        return issue?.message || issue?.code || 'Ошибка профиля';
-    }
-  }
-
-  function formatVersionStatusLabel(status) {
-    switch (status) {
-      case 'receiving':
-      case 'uploaded':
-      case 'profiling':
-      case 'ready':
-      case 'invalid':
-      case 'deleted':
-        return status;
-      default:
-        return status || 'unknown';
-    }
-  }
-
-  function renderUploadMarkup(upload) {
-    const actions = [];
-    if (shouldShowCancel(upload)) {
-      actions.push(`
-        <button class="dataset-btn" type="button" data-action="cancel-upload" data-upload-id="${escapeAttribute(upload.id)}">
-          Отменить
-        </button>
-      `);
-    }
-    if (upload.retryable && upload.versionId) {
-      actions.push(`
-        <button class="dataset-btn" type="button" data-action="retry-version-status" data-version-id="${escapeAttribute(upload.versionId)}" data-upload-id="${escapeAttribute(upload.id)}">
-          Повторить проверку
-        </button>
-      `);
-    }
-
-    return `
-      <div class="upload-card">
-        <div class="upload-head">
-          <div>
-            <div class="upload-name">${escapeHtml(upload.file?.name || 'Файл')}</div>
-            <div class="upload-meta">${escapeHtml(upload.displayName || stemFilename(upload.file?.name || 'dataset'))} · ${escapeHtml(formatBytes(upload.file?.size || 0))}</div>
-          </div>
-          <div class="dataset-card-actions">${actions.join('')}</div>
-        </div>
-        <div class="upload-progress">
-          <div class="upload-progress-bar" style="width:${Number(upload.progress || 0)}%"></div>
-        </div>
-        <div class="upload-status ${escapeAttribute(upload.status || 'queued')}">${escapeHtml(upload.message || '')}</div>
-      </div>
-    `;
-  }
-
-  function renderUploadList(state) {
-    if (!state.uploads.length) {
-      return '<div class="dataset-muted">Загрузки появятся здесь после выбора файлов.</div>';
-    }
-    return state.uploads.map(renderUploadMarkup).join('');
-  }
-
-  function renderInlineUploadStatus(state) {
-    const parts = [];
-    if (state.bannerMessage) {
-      parts.push(`<div class="dataset-error-banner">${escapeHtml(state.bannerMessage)}</div>`);
-    }
-    if (state.uploads.length) {
-      parts.push(renderUploadList(state));
-    } else {
-      parts.push('<div class="dataset-muted">Файлы появятся здесь после выбора или перетаскивания.</div>');
-    }
-    return parts.join('');
-  }
-
-  function renderVersionProfile(profilePayload, version) {
-    if (!profilePayload) {
-      if (version.status === 'profiling') {
-        return '<div class="dataset-muted" style="margin-top:10px;">Профиль строится. Версия станет доступной для выбора после статуса ready.</div>';
+      if ((response.status === 404 || response.status === 405) && candidates.length > 1) {
+        lastError = new Error(`Endpoint unavailable: ${path}`);
+        continue;
       }
-      return '';
-    }
-
-    const sheets = Array.isArray(profilePayload.profile?.sheets) ? profilePayload.profile.sheets : [];
-    const warnings = Array.isArray(profilePayload.profile?.warnings) ? profilePayload.profile.warnings : [];
-    const allWarnings = warnings.concat(
-      sheets.flatMap(sheet => Array.isArray(sheet.warnings) ? sheet.warnings : [])
-    );
-
-    return `
-      <div style="margin-top:12px;">
-        ${sheets.length ? `
-          <div class="profile-sheet-list">
-            ${sheets.map(sheet => `
-              <div class="version-sheet">
-                <strong>${escapeHtml(sheet.name || '__root__')}</strong>
-                <div class="version-sheet-meta">
-                  ${escapeHtml(`${sheet.row_count || 0} ${pluralize(sheet.row_count || 0, 'строка', 'строки', 'строк')}`)}
-                  · ${escapeHtml(`${(sheet.columns || []).length} ${pluralize((sheet.columns || []).length, 'колонка', 'колонки', 'колонок')}`)}
-                  ${sheet.sampled ? ' · sampled' : ''}
-                </div>
-                ${(sheet.columns || []).length ? `
-                  <div class="version-chip-row" style="margin-top:8px;">
-                    ${(sheet.columns || []).slice(0, 6).map(column => `<span class="version-chip">${escapeHtml(column.name)}</span>`).join('')}
-                  </div>
-                ` : ''}
-              </div>
-            `).join('')}
-          </div>
-        ` : ''}
-        ${allWarnings.length ? `
-          <div class="version-issues" style="margin-top:10px;">
-            ${allWarnings.map(warning => `<span class="issue-chip warning">${escapeHtml(warning)}</span>`).join('')}
-          </div>
-        ` : ''}
-      </div>
-    `;
-  }
-
-  function renderDatasetVersionMarkup(dataset, version, options) {
-    const profile = options.profileCache.get(version.id);
-    const selectedIds = options.selectionMode === 'analysis'
-      ? options.viewedAnalysisVersionIds
-      : options.draftSelectedVersionIds;
-    const checked = selectedIds.includes(version.id);
-    const canSelect = options.selectionMode === 'draft' && version.status === 'ready';
-    const issues = Array.isArray(profile?.issues) ? profile.issues : [];
-    const retryButton = version.status === 'profiling' && options.retryableVersionIds.has(version.id)
-      ? `
-        <button class="dataset-btn" type="button" data-action="retry-version-status" data-version-id="${escapeAttribute(version.id)}">
-          Повторить проверку
-        </button>
-      `
-      : '';
-
-    return `
-      <div class="version-row">
-        <div class="version-row-head">
-          <label class="version-select">
-            <input
-              type="checkbox"
-              data-action="toggle-version-selection"
-              data-version-id="${escapeAttribute(version.id)}"
-              ${checked ? 'checked' : ''}
-              ${canSelect ? '' : 'disabled'}
-            >
-            <div class="version-copy">
-              <div class="version-title">${escapeHtml(version.original_filename || dataset.display_name || 'Файл')}</div>
-              <div class="version-meta">${escapeHtml((version.format || 'unknown').toUpperCase())} · ${escapeHtml(formatBytes(version.size_bytes || 0))} · ${escapeHtml(formatVersionStatusLabel(version.status))}</div>
-            </div>
-          </label>
-          <div class="version-actions">
-            <span class="dataset-status ${escapeAttribute(version.status)}">${escapeHtml(formatVersionStatusLabel(version.status))}</span>
-            ${retryButton}
-            <button class="dataset-btn danger" type="button" data-action="delete-version" data-version-id="${escapeAttribute(version.id)}">Удалить</button>
-          </div>
-        </div>
-        ${renderVersionProfile(profile, version)}
-        ${issues.length ? `
-          <div class="version-issues" style="margin-top:10px;">
-            ${issues.map(issue => `<span class="issue-chip ${escapeAttribute(issue.severity || 'error')}" title="${escapeAttribute(issue.message || '')}">${escapeHtml(describeDatasetIssue(issue))}</span>`).join('')}
-          </div>
-        ` : ''}
-      </div>
-    `;
-  }
-
-  function renderDatasetCardMarkup(dataset, options) {
-    const versions = Array.isArray(dataset.versions) ? dataset.versions : [];
-    return `
-      <article class="dataset-card">
-        <div class="dataset-card-head">
-          <div>
-            <div class="dataset-card-title">${escapeHtml(dataset.display_name || 'Dataset')}</div>
-            <div class="dataset-card-meta">${versions.length} ${pluralize(versions.length, 'версия', 'версии', 'версий')} · ${escapeHtml(dataset.source_type || 'upload')}</div>
-          </div>
-          <div class="dataset-card-actions">
-            <button class="dataset-btn" type="button" data-action="add-version" data-dataset-id="${escapeAttribute(dataset.id)}">
-              Новая версия
-            </button>
-          </div>
-        </div>
-        <div class="dataset-card-body">
-          ${versions.map(version => renderDatasetVersionMarkup(dataset, version, options)).join('')}
-        </div>
-      </article>
-    `;
-  }
-
-  function renderDatasetListMarkup(state) {
-    if (!state.datasets.length) {
-      return `
-        <div class="dataset-card">
-          <div class="dataset-muted">
-            В workspace пока нет загруженных файлов. Добавьте CSV, JSON или XLSX, затем выберите ready-версию для анализа.
-          </div>
-        </div>
-      `;
-    }
-
-    const options = {
-      draftSelectedVersionIds: state.draftSelectedVersionIds,
-      viewedAnalysisVersionIds: state.viewedAnalysisVersionIds,
-      selectionMode: state.selectionMode,
-      profileCache: state.profileCache,
-      retryableVersionIds: state.retryableVersionIds
-    };
-    return state.datasets.map(dataset => renderDatasetCardMarkup(dataset, options)).join('');
-  }
-
-  function renderComposerMarkup(state) {
-    const note = `
-      <div class="composer-empty-datasets">
-        Выбранные версии файлов будут использованы при выполнении анализа.
-      </div>
-    `;
-
-    if (!state.initialized && !state.initializationError) {
-      return `${note}<div class="composer-empty-datasets">Workspace загружается. Анализ можно отправить и без файлов.</div>`;
-    }
-
-    if (state.initializationError) {
-      return `
-        ${note}
-        <div class="composer-empty-datasets">
-          Не удалось загрузить workspace. Анализ можно отправить без файлов.
-          <button class="dataset-inline-link" type="button" data-action="retry-workspace">Повторить</button>
-        </div>
-      `;
-    }
-
-    const ids = state.selectionMode === 'analysis'
-      ? state.viewedAnalysisVersionIds
-      : state.draftSelectedVersionIds;
-    const entries = getVersionEntriesByIds(state.datasets, ids)
-      .filter(entry => entry.version.status === 'ready');
-
-    if (!entries.length) {
-      return `
-        ${note}
-        <div class="composer-empty-datasets">
-          Файлы не выбраны.
-          <button class="dataset-inline-link" type="button" data-action="open-drawer">Добавить данные</button>
-        </div>
-      `;
-    }
-
-    return `
-      ${note}
-      ${entries.map(entry => `
-        <span class="composer-file-chip">
-          ${escapeHtml(entry.dataset.display_name)} · ${escapeHtml(entry.version.original_filename)}
-          ${state.selectionMode === 'draft'
-            ? `<button type="button" aria-label="Убрать файл" data-action="remove-draft-selection" data-version-id="${escapeAttribute(entry.version.id)}">×</button>`
-            : '<span class="dataset-muted">read-only</span>'}
-        </span>
-      `).join('')}
-    `;
-  }
-
-  function upsertVersionInDatasets(datasets, versionUpdate) {
-    if (!versionUpdate || !versionUpdate.dataset_id) {
-      return datasets;
-    }
-
-    return (datasets || []).map(dataset => {
-      if (dataset.id !== versionUpdate.dataset_id) {
-        return dataset;
-      }
-
-      const versions = Array.isArray(dataset.versions) ? dataset.versions.slice() : [];
-      const index = versions.findIndex(version => version.id === versionUpdate.id);
-      if (index >= 0) {
-        versions[index] = {...versions[index], ...versionUpdate};
-      } else {
-        versions.unshift(versionUpdate);
-      }
-      return {...dataset, versions};
-    });
-  }
-
-  function createDatasetWorkspaceCore(options) {
-    const state = createInitialDatasetWorkspaceState({
-      workspaceId: loadStoredWorkspaceId(options.storage),
-      draftSelectedVersionIds: loadStoredDraftSelection(options.storage)
-    });
-    const activeUploads = new Map();
-    const versionPolls = new Map();
-    const delayFn = options.delay || (ms => new Promise(resolve => setTimeout(resolve, ms)));
-
-    function emit() {
-      if (typeof options.onStateChange === 'function') {
-        options.onStateChange(state);
-      }
-    }
-
-    function persistDraftSelection() {
-      saveStoredDraftSelection(options.storage, state.draftSelectedVersionIds);
-    }
-
-    function persistWorkspace() {
-      saveStoredWorkspaceId(options.storage, state.workspaceId);
-    }
-
-    function pruneDraftSelection() {
-      const readyIds = new Set(
-        state.datasets.flatMap(dataset =>
-          (dataset.versions || [])
-            .filter(version => version.status === 'ready')
-            .map(version => version.id)
-        )
-      );
-      state.draftSelectedVersionIds = state.draftSelectedVersionIds.filter(id => readyIds.has(id));
-      persistDraftSelection();
-    }
-
-    async function refreshWorkspace() {
-      const payload = await options.api.listDatasets(state.workspaceId || DEFAULT_WORKSPACE_ID);
-      state.datasets = Array.isArray(payload.datasets) ? payload.datasets : [];
-      state.initialized = true;
-      state.initializationError = null;
-      pruneDraftSelection();
-      emit();
-      return state.datasets;
-    }
-
-    async function hydrateProfiles() {
-      const pending = [];
-      state.datasets.forEach(dataset => {
-        (dataset.versions || []).forEach(version => {
-          if (['ready', 'invalid'].includes(version.status) && !state.profileCache.has(version.id)) {
-            pending.push(
-              options.api.getDatasetProfile(version.id)
-                .then(profile => {
-                  state.profileCache.set(version.id, profile);
-                })
-                .catch(() => {})
-            );
-          }
-        });
-      });
-      if (pending.length) {
-        await Promise.all(pending);
-        emit();
-      }
-    }
-
-    async function initWorkspace() {
-      try {
-        const workspace = await options.api.getDefaultWorkspace();
-        state.workspaceId = workspace.id || DEFAULT_WORKSPACE_ID;
-        persistWorkspace();
-        await refreshWorkspace();
-        await hydrateProfiles();
-      } catch (_) {
-        state.initializationError = 'Не удалось загрузить workspace.';
-        state.initialized = false;
-        emit();
-      }
-    }
-
-    function showDraftSelection() {
-      state.selectionMode = 'draft';
-      emit();
-    }
-
-    function showAnalysisSelection(versionIds) {
-      state.selectionMode = 'analysis';
-      state.viewedAnalysisVersionIds = normalizeVersionIdList(versionIds);
-      emit();
-    }
-
-    function openDrawer() {
-      state.drawerOpen = true;
-      emit();
-    }
-
-    function closeDrawer() {
-      state.drawerOpen = false;
-      emit();
-    }
-
-    function setBannerMessage(message) {
-      state.bannerMessage = message || '';
-      emit();
-    }
-
-    function clearBannerMessage() {
-      if (!state.bannerMessage) return;
-      state.bannerMessage = '';
-      emit();
-    }
-
-    function queueFiles(files, context = null) {
-      const split = splitAcceptedUploadFiles(files);
-      if (!split.accepted.length) {
-        state.bannerMessage = split.rejected.length
-          ? 'Поддерживаются только файлы .csv, .xlsx и .json.'
-          : '';
-        emit();
-        return false;
-      }
-
-      const result = createUploadItems(split.accepted, context, options.createUploadId || defaultCreateUploadId);
-      if (result.error) {
-        state.bannerMessage = result.error;
-        emit();
-        return false;
-      }
-
-      state.bannerMessage = split.rejected.length
-        ? 'Неподдерживаемые файлы пропущены. Загрузите только .csv, .xlsx или .json.'
-        : '';
-      result.items.reverse().forEach(item => {
-        state.uploads.unshift(item);
-      });
-      emit();
-      pumpUploads();
-      return true;
-    }
-
-    function pumpUploads() {
-      while (activeUploads.size < MAX_PARALLEL_UPLOADS) {
-        const nextUpload = state.uploads.find(item => item.status === 'queued');
-        if (!nextUpload) break;
-        startUpload(nextUpload);
-      }
-    }
-
-    async function startUpload(upload) {
-      if (!upload || upload.status !== 'queued') return;
-      upload.status = 'uploading';
-      upload.message = 'Загрузка файла';
-      upload.abortController = new AbortController();
-      activeUploads.set(upload.id, upload);
-      emit();
-
-      try {
-        const response = await options.api.uploadDataset({
-          workspaceId: state.workspaceId || DEFAULT_WORKSPACE_ID,
-          file: upload.file,
-          displayName: upload.displayName,
-          datasetId: upload.datasetId,
-          signal: upload.abortController.signal,
-          onProgress(progress) {
-            if (upload.canceled) return;
-            upload.progress = progress;
-            emit();
-          }
-        });
-
-        if (upload.canceled) {
-          return;
-        }
-
-        upload.progress = 100;
-        upload.status = 'profiling';
-        upload.message = 'Профилирование запущено';
-        upload.versionId = response.version?.id || null;
-        upload.retryable = false;
-        emit();
-        await refreshWorkspace();
-        await hydrateProfiles();
-
-        if (upload.versionId) {
-          startMonitoring(upload.versionId, {uploadId: upload.id});
-        }
-      } catch (error) {
-        if (upload.canceled) {
-          return;
-        }
-        upload.status = 'error';
-        upload.message = error?.message || 'Загрузка завершилась ошибкой';
-        emit();
-      } finally {
-        activeUploads.delete(upload.id);
-        emit();
-        pumpUploads();
-      }
-    }
-
-    function updateUploadStatus(uploadId, status, message, retryable) {
-      const upload = state.uploads.find(item => item.id === uploadId);
-      if (!upload || upload.canceled) return;
-      upload.status = status;
-      upload.message = message;
-      upload.retryable = Boolean(retryable);
-      emit();
-    }
-
-    function startMonitoring(versionId, optionsForVersion = {}) {
-      if (!versionId) return null;
-      const existing = versionPolls.get(versionId);
-      if (existing) {
-        if (optionsForVersion.uploadId) existing.uploadIds.add(optionsForVersion.uploadId);
-        return existing.promise;
-      }
-
-      state.retryableVersionIds.delete(versionId);
-      emit();
-
-      const entry = {
-        uploadIds: new Set(optionsForVersion.uploadId ? [optionsForVersion.uploadId] : []),
-        promise: null
-      };
-
-      entry.promise = (async () => {
-        let consecutiveErrors = 0;
-
-        while (true) {
-          try {
-            const version = await options.api.getDatasetVersion(versionId);
-            consecutiveErrors = 0;
-            state.datasets = upsertVersionInDatasets(state.datasets, version);
-
-            if (['ready', 'invalid', 'deleted'].includes(version.status)) {
-              if (version.status !== 'deleted') {
-                try {
-                  const profile = await options.api.getDatasetProfile(versionId);
-                  state.profileCache.set(versionId, profile);
-                } catch (_) {
-                  // Keep terminal status even if profile fetch fails.
-                }
-              }
-
-              entry.uploadIds.forEach(uploadId => {
-                updateUploadStatus(
-                  uploadId,
-                  version.status === 'ready' ? 'done' : version.status,
-                  describeVersionStatus(version.status),
-                  false
-                );
-              });
-
-              if (version.status === 'ready' && state.selectionMode === 'draft') {
-                const selected = new Set(state.draftSelectedVersionIds);
-                selected.add(version.id);
-                state.draftSelectedVersionIds = Array.from(selected);
-                persistDraftSelection();
-              }
-
-              state.retryableVersionIds.delete(versionId);
-              emit();
-              return version;
-            }
-
-            entry.uploadIds.forEach(uploadId => {
-              updateUploadStatus(uploadId, 'profiling', 'Профилирование выполняется', false);
-            });
-
-            emit();
-            await delayFn(DEFAULT_POLL_INTERVAL_MS);
-          } catch (_) {
-            consecutiveErrors += 1;
-
-            if (consecutiveErrors >= MAX_CONSECUTIVE_POLL_ERRORS) {
-              state.retryableVersionIds.add(versionId);
-              entry.uploadIds.forEach(uploadId => {
-                updateUploadStatus(
-                  uploadId,
-                  'error',
-                  'Не удалось получить статус обработки файла.',
-                  true
-                );
-              });
-              emit();
-              return null;
-            }
-
-            await delayFn(Math.min(4000, 500 * (2 ** (consecutiveErrors - 1))));
-          }
-        }
-      })().finally(() => {
-        versionPolls.delete(versionId);
-      });
-
-      versionPolls.set(versionId, entry);
-      return entry.promise;
-    }
-
-    function retryMonitoring(versionId, uploadId) {
-      if (!versionId) return;
-      state.retryableVersionIds.delete(versionId);
-      if (uploadId) {
-        updateUploadStatus(uploadId, 'profiling', 'Профилирование выполняется', false);
-      }
-      startMonitoring(versionId, {uploadId});
-    }
-
-    function cancelUpload(uploadId) {
-      const upload = state.uploads.find(item => item.id === uploadId);
-      if (!upload) return;
-
-      if (upload.status === 'queued') {
-        state.uploads = state.uploads.filter(item => item.id !== uploadId);
-        emit();
-        return;
-      }
-
-      if (upload.status === 'uploading') {
-        upload.canceled = true;
-        upload.status = 'canceled';
-        upload.message = 'Загрузка отменена';
-        upload.retryable = false;
-        upload.abortController?.abort();
-        emit();
-      }
-    }
-
-    async function deleteVersion(versionId) {
-      try {
-        await options.api.deleteDatasetVersion(versionId);
-        state.profileCache.delete(versionId);
-        state.draftSelectedVersionIds = state.draftSelectedVersionIds.filter(id => id !== versionId);
-        state.viewedAnalysisVersionIds = state.viewedAnalysisVersionIds.filter(id => id !== versionId);
-        persistDraftSelection();
-        await refreshWorkspace();
-        await hydrateProfiles();
-      } catch (_) {
-        state.bannerMessage = 'Не удалось удалить версию файла.';
-        emit();
-      }
-    }
-
-    function toggleDraftSelection(versionId, checked) {
-      if (state.selectionMode !== 'draft') return;
-      const index = buildVersionIndex(state.datasets).get(versionId);
-      if (!index || index.version.status !== 'ready') return;
-
-      const next = new Set(state.draftSelectedVersionIds);
-      if (checked) next.add(versionId);
-      else next.delete(versionId);
-      state.draftSelectedVersionIds = Array.from(next);
-      persistDraftSelection();
-      emit();
-    }
-
-    function removeDraftSelection(versionId) {
-      state.draftSelectedVersionIds = state.draftSelectedVersionIds.filter(id => id !== versionId);
-      persistDraftSelection();
-      emit();
-    }
-
-    return {
-      state,
-      versionPolls,
-      initWorkspace,
-      refreshWorkspace,
-      hydrateProfiles,
-      showDraftSelection,
-      showAnalysisSelection,
-      openDrawer,
-      closeDrawer,
-      setBannerMessage,
-      clearBannerMessage,
-      queueFiles,
-      cancelUpload,
-      startMonitoring,
-      retryMonitoring,
-      deleteVersion,
-      toggleDraftSelection,
-      removeDraftSelection,
-      getSubmissionVersionIds() {
-        return getDraftReadyVersionIds(state);
-      }
-    };
-  }
-
-  function createBrowserApi(options) {
-    const apiBase = options.apiBase;
-    const fetchImpl = options.fetchImpl || global.fetch.bind(global);
-    const xhrFactory = options.xhrFactory || (() => new global.XMLHttpRequest());
-
-    async function fetchJson(url, init, message) {
-      const response = await fetchImpl(url, init);
       if (!response.ok) {
-        throw new Error(`${message} (${response.status})`);
+        let detail = `HTTP ${response.status}`;
+        try {
+          const payload = await response.json();
+          detail = payload.detail || payload.message || detail;
+        } catch (_) {}
+        const error = new Error(detail);
+        error.status = response.status;
+        throw error;
       }
+      if (response.status === 204) return null;
       return response.json();
     }
+    throw lastError || new Error('Dataset API endpoint is unavailable');
+  }
 
+  function loadSelectedIds() {
+    try {
+      const value = JSON.parse(localStorage.getItem('mirrolla_selected_dataset_versions') || '[]');
+      return Array.isArray(value) ? [...new Set(value.filter(item => typeof item === 'string'))] : [];
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function persistSelection() {
+    localStorage.setItem('mirrolla_selected_dataset_versions', JSON.stringify(state.draftSelectedVersionIds));
+  }
+
+  function notify() {
+    const snapshot = getSnapshot();
+    state.listeners.forEach(listener => listener(snapshot));
+    window.dispatchEvent(new CustomEvent('mirrolla:datasets-changed', { detail: snapshot }));
+  }
+
+  function getSnapshot() {
     return {
-      getDefaultWorkspace() {
-        return fetchJson(`${apiBase}/workspaces/default`, undefined, 'Не удалось получить workspace');
-      },
-      listDatasets(workspaceId) {
-        return fetchJson(`${apiBase}/workspaces/${encodeURIComponent(workspaceId)}/datasets`, undefined, 'Не удалось получить список файлов');
-      },
-      getDatasetVersion(versionId) {
-        return fetchJson(`${apiBase}/dataset-versions/${encodeURIComponent(versionId)}`, undefined, 'Не удалось получить статус файла');
-      },
-      getDatasetProfile(versionId) {
-        return fetchJson(`${apiBase}/dataset-versions/${encodeURIComponent(versionId)}/profile`, undefined, 'Не удалось получить профиль файла');
-      },
-      async deleteDatasetVersion(versionId) {
-        const response = await fetchImpl(`${apiBase}/dataset-versions/${encodeURIComponent(versionId)}`, {
-          method: 'DELETE'
-        });
-        if (!response.ok) {
-          throw new Error('Не удалось удалить версию файла.');
-        }
-        return response.json();
-      },
-      uploadDataset({workspaceId, file, displayName, datasetId, signal, onProgress}) {
-        return new Promise((resolve, reject) => {
-          const xhr = xhrFactory();
-          xhr.open('POST', `${apiBase}/workspaces/${encodeURIComponent(workspaceId)}/datasets`);
-          xhr.responseType = 'json';
-
-          xhr.upload.addEventListener('progress', event => {
-            if (event.lengthComputable && typeof onProgress === 'function') {
-              onProgress(Math.max(0, Math.min(100, Math.round((event.loaded / event.total) * 100))));
-            }
-          });
-
-          xhr.onload = async () => {
-            if (xhr.status >= 200 && xhr.status < 300) {
-              resolve(xhr.response);
-              return;
-            }
-
-            const detail = xhr.response?.detail;
-            reject(new Error(sanitizeUploadError(xhr.status, detail)));
-          };
-
-          xhr.onerror = () => reject(new Error('Не удалось загрузить файл. Проверьте сеть и повторите попытку.'));
-          xhr.onabort = () => reject(new Error('Загрузка отменена.'));
-
-          signal?.addEventListener('abort', () => xhr.abort(), {once: true});
-
-          const body = new global.FormData();
-          body.append('file', file, file.name);
-          if (displayName) body.append('display_name', displayName);
-          if (datasetId) body.append('dataset_id', datasetId);
-          xhr.send(body);
-        });
-      }
+      initialized: state.initialized,
+      loading: state.loading,
+      datasets: state.datasets,
+      selectedVersions: getSelectedVersions(),
+      uploads: state.uploadQueue.slice()
     };
   }
 
-  function createDatasetWorkspaceController(options) {
-    const root = options.root;
-    const api = options.api || createBrowserApi({
-      apiBase: options.apiBase,
-      fetchImpl: options.fetchImpl,
-      xhrFactory: options.xhrFactory
-    });
-    const fileInput = root.querySelector('#datasetFileInput');
-    const dropzone = root.querySelector('#datasetDropzone');
-    const inlineDropzone = root.querySelector('#inlineDatasetDropzone');
-    const elements = {
-      drawer: root.querySelector('#datasetDrawer'),
-      backdrop: root.querySelector('#datasetBackdrop'),
-      uploadList: root.querySelector('#uploadList'),
-      uploadQueueSummary: root.querySelector('#uploadQueueSummary'),
-      datasetList: root.querySelector('#datasetList'),
-      datasetWorkspaceSummary: root.querySelector('#datasetWorkspaceSummary'),
-      composerDatasets: root.querySelector('#composerDatasets'),
-      datasetLauncherCount: root.querySelector('#datasetLauncherCount'),
-      drawerError: root.querySelector('#datasetDrawerError'),
-      inlineUploadStatus: root.querySelector('#inlineUploadStatus'),
-      composerContext: root.querySelector('.composer-context')
+  function subscribe(listener) {
+    state.listeners.add(listener);
+    listener(getSnapshot());
+    return () => state.listeners.delete(listener);
+  }
+
+  function extensionOf(name) {
+    const parts = String(name || '').toLowerCase().split('.');
+    return parts.length > 1 ? parts.pop() : '';
+  }
+
+  function readableBytes(bytes) {
+    const value = Number(bytes || 0);
+    if (!Number.isFinite(value) || value <= 0) return '0 Б';
+    const units = ['Б', 'КБ', 'МБ', 'ГБ'];
+    const index = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1);
+    return `${(value / (1024 ** index)).toFixed(index ? 1 : 0)} ${units[index]}`;
+  }
+
+  function normalizeVersion(raw, dataset) {
+    if (!raw) return null;
+    const version = raw.version || raw.dataset_version || raw;
+    return {
+      ...version,
+      id: String(version.id || version.version_id || ''),
+      dataset_id: String(version.dataset_id || dataset?.id || ''),
+      original_filename: version.original_filename || version.filename || dataset?.display_name || 'Файл',
+      format: String(version.format || extensionOf(version.original_filename || '') || '').toLowerCase(),
+      status: String(version.status || 'uploaded').toLowerCase(),
+      size_bytes: Number(version.size_bytes || version.size || 0),
+      issues: Array.isArray(version.issues) ? version.issues : []
     };
+  }
 
-    const core = createDatasetWorkspaceCore({
-      api,
-      storage: options.storage || global.localStorage,
-      delay: options.delay,
-      createUploadId: options.createUploadId,
-      onStateChange: render
+  function normalizeDatasets(payload) {
+    const source = Array.isArray(payload) ? payload : payload?.datasets || payload?.items || [];
+    return source.map(raw => {
+      const dataset = raw.dataset || raw;
+      const versionsSource = raw.versions || dataset.versions || (raw.latest_version ? [raw.latest_version] : []);
+      const normalized = {
+        ...dataset,
+        id: String(dataset.id || dataset.dataset_id || ''),
+        display_name: dataset.display_name || dataset.name || 'Без названия',
+        versions: versionsSource.map(item => normalizeVersion(item, dataset)).filter(item => item?.id)
+      };
+      return normalized;
+    }).filter(dataset => dataset.id);
+  }
+
+  function rebuildVersionIndex() {
+    state.versionsById = new Map();
+    state.datasets.forEach(dataset => dataset.versions.forEach(version => state.versionsById.set(version.id, { dataset, version })));
+    state.draftSelectedVersionIds = state.draftSelectedVersionIds.filter(id => state.versionsById.get(id)?.version.status === 'ready');
+    persistSelection();
+  }
+
+  async function refresh() {
+    if (state.loading) return;
+    state.loading = true;
+    notify();
+    try {
+      const payload = await requestCandidates(endpoints.listDatasets);
+      state.datasets = normalizeDatasets(payload);
+      rebuildVersionIndex();
+      state.initialized = true;
+      render();
+      startPollsForPendingVersions();
+    } catch (error) {
+      toast(`Не удалось загрузить список файлов: ${safeMessage(error)}`, 'error');
+    } finally {
+      state.loading = false;
+      notify();
+    }
+  }
+
+  function validateFiles(fileList) {
+    const accepted = [];
+    const rejected = [];
+    for (const file of Array.from(fileList || [])) {
+      const ext = extensionOf(file.name);
+      if (!allowedExtensions.has(ext)) {
+        rejected.push(`${file.name}: поддерживаются CSV, XLSX и JSON`);
+      } else if (file.size <= 0) {
+        rejected.push(`${file.name}: файл пустой`);
+      } else if (file.size > maxUploadBytes) {
+        rejected.push(`${file.name}: превышен лимит ${readableBytes(maxUploadBytes)}`);
+      } else {
+        accepted.push(file);
+      }
+    }
+    rejected.forEach(message => toast(message, 'error'));
+    return accepted;
+  }
+
+  function queueFiles(fileList, options = {}) {
+    const files = validateFiles(fileList);
+    if (options.datasetId && files.length > 1) {
+      toast('Для новой версии выберите один файл.', 'error');
+      return [];
+    }
+    const items = files.map(file => ({
+      localId: crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`,
+      file,
+      datasetId: options.datasetId || null,
+      status: 'queued',
+      progress: 0,
+      versionId: null,
+      error: null,
+      xhr: null
+    }));
+    state.uploadQueue.push(...items);
+    renderUploads();
+    notify();
+    pumpQueue();
+    return items;
+  }
+
+  function pumpQueue() {
+    while (state.activeUploads < maxParallelUploads) {
+      const item = state.uploadQueue.find(candidate => candidate.status === 'queued');
+      if (!item) break;
+      uploadItem(item);
+    }
+  }
+
+  function uploadItem(item) {
+    item.status = 'uploading';
+    state.activeUploads += 1;
+    renderUploads();
+    notify();
+
+    const form = new FormData();
+    form.append('file', item.file, item.file.name);
+    form.append('workspace_id', workspaceId);
+    form.append('display_name', item.file.name.replace(/\.[^.]+$/, ''));
+    if (item.datasetId) form.append('dataset_id', item.datasetId);
+
+    uploadWithCandidates(endpoints.upload, form, progress => {
+      item.progress = progress;
+      renderUploads();
+    }, item).then(payload => {
+      const version = normalizeVersion(payload?.version || payload?.dataset_version || payload, payload?.dataset);
+      if (!version?.id) throw new Error('API не вернул идентификатор версии');
+      item.versionId = version.id;
+      mergeVersion(version);
+      item.status = version.status === 'ready' ? 'ready' : 'profiling';
+      item.progress = 100;
+      if (version.status === 'ready') selectVersion(version.id, true);
+      return monitorVersion(version.id, item);
+    }).catch(error => {
+      if (item.status !== 'canceled') {
+        item.status = 'error';
+        item.error = safeMessage(error);
+        toast(`${item.file.name}: ${item.error}`, 'error');
+      }
+    }).finally(() => {
+      state.activeUploads -= 1;
+      item.xhr = null;
+      renderUploads();
+      notify();
+      pumpQueue();
     });
+  }
 
-    function render() {
-      const state = core.state;
-      elements.drawer.classList.toggle('open', state.drawerOpen);
-      elements.backdrop.classList.toggle('visible', state.drawerOpen);
-      elements.uploadQueueSummary.textContent = `${state.uploads.length} ${pluralize(state.uploads.length, 'файл', 'файла', 'файлов')}`;
-      elements.uploadList.innerHTML = renderUploadList(state);
-      if (elements.inlineUploadStatus) {
-        elements.inlineUploadStatus.innerHTML = renderInlineUploadStatus(state);
-      }
-      elements.datasetList.innerHTML = renderDatasetListMarkup(state);
-      elements.datasetWorkspaceSummary.textContent = `${state.datasets.length} ${pluralize(state.datasets.length, 'набор', 'набора', 'наборов')}`;
-      elements.datasetLauncherCount.textContent = String(getDraftReadyVersionIds(state).length);
-      elements.composerDatasets.innerHTML = renderComposerMarkup(state);
-      elements.drawerError.hidden = !state.bannerMessage;
-      elements.drawerError.textContent = state.bannerMessage || '';
-      if (elements.composerContext) {
-        elements.composerContext.innerHTML = `
-          <span class="context-chip">Ready files attach to the analysis</span>
-          <span>Use the drawer to manage workspace versions and profiles</span>
-        `;
+  async function uploadWithCandidates(candidates, form, onProgress, uploadItemRef) {
+    let lastError = null;
+    for (const path of candidates) {
+      try {
+        return await xhrUpload(`${apiBase}${path}`, form, onProgress, uploadItemRef);
+      } catch (error) {
+        if (error.status === 404 || error.status === 405) {
+          lastError = error;
+          continue;
+        }
+        throw error;
       }
     }
+    throw lastError || new Error('Upload endpoint is unavailable');
+  }
 
-    function handleFileInputChange(files) {
-      const context = core.state.filePickerContext;
-      core.state.filePickerContext = null;
-      fileInput.value = '';
-      core.queueFiles(files, context);
-    }
+  function xhrUpload(url, form, onProgress, uploadItemRef) {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', url);
+      Object.entries(authHeaders()).forEach(([name, value]) => xhr.setRequestHeader(name, value));
+      if (uploadItemRef) uploadItemRef.xhr = xhr;
 
-    function handleClick(event) {
-      const actionTarget = event.target.closest('[data-action]');
-      if (!actionTarget) return;
-
-      const action = actionTarget.dataset.action;
-      const datasetId = actionTarget.dataset.datasetId || null;
-      const versionId = actionTarget.dataset.versionId || null;
-      const uploadId = actionTarget.dataset.uploadId || null;
-
-      switch (action) {
-        case 'open-drawer':
-          core.openDrawer();
-          break;
-        case 'close-drawer':
-          core.closeDrawer();
-          break;
-        case 'pick-files':
-          core.state.filePickerContext = {mode: 'upload', datasetId: null};
-          fileInput.multiple = true;
-          fileInput.click();
-          break;
-        case 'add-version':
-          core.state.filePickerContext = {mode: 'add-version', datasetId};
-          fileInput.multiple = true;
-          fileInput.click();
-          break;
-        case 'cancel-upload':
-          core.cancelUpload(uploadId);
-          break;
-        case 'delete-version':
-          core.deleteVersion(versionId);
-          break;
-        case 'remove-draft-selection':
-          core.removeDraftSelection(versionId);
-          break;
-        case 'retry-workspace':
-          core.setBannerMessage('');
-          core.initWorkspace();
-          break;
-        case 'retry-version-status':
-          core.retryMonitoring(versionId, uploadId || undefined);
-          break;
-      }
-    }
-
-    function handleChange(event) {
-      const target = event.target;
-      if (target === fileInput) {
-        handleFileInputChange(Array.from(target.files || []));
-        return;
-      }
-
-      const action = target.dataset.action;
-      if (action === 'toggle-version-selection') {
-        core.toggleDraftSelection(target.dataset.versionId, target.checked);
-      }
-    }
-
-    function bindDropzone(zone) {
-      if (!zone) return;
-      ['dragenter', 'dragover'].forEach(eventName => {
-        zone.addEventListener(eventName, event => {
-          event.preventDefault();
-          zone.classList.add('dragover');
-        });
+      xhr.upload.addEventListener('progress', event => {
+        if (event.lengthComputable) onProgress(Math.round((event.loaded / event.total) * 100));
       });
-
-      ['dragleave', 'dragend', 'drop'].forEach(eventName => {
-        zone.addEventListener(eventName, event => {
-          event.preventDefault();
-          zone.classList.remove('dragover');
-        });
-      });
-
-      zone.addEventListener('drop', event => {
-        event.preventDefault();
-        const files = Array.from(event.dataTransfer?.files || []);
-        if (files.length) {
-          core.queueFiles(files, {mode: 'upload', datasetId: null});
+      xhr.addEventListener('load', () => {
+        let payload = null;
+        try { payload = xhr.responseText ? JSON.parse(xhr.responseText) : null; } catch (_) {}
+        if (xhr.status >= 200 && xhr.status < 300) resolve(payload);
+        else {
+          const error = new Error(payload?.detail || payload?.message || `HTTP ${xhr.status}`);
+          error.status = xhr.status;
+          reject(error);
         }
       });
+      xhr.addEventListener('error', () => reject(new Error('Сетевая ошибка при загрузке')));
+      xhr.addEventListener('abort', () => reject(new Error('Загрузка отменена')));
+      xhr.send(form);
+    });
+  }
+
+  async function monitorVersion(versionId, uploadItemRef = null) {
+    if (state.pollers.has(versionId)) return state.pollers.get(versionId);
+    const task = (async () => {
+      let consecutiveErrors = 0;
+      while (true) {
+        try {
+          const payload = await requestCandidates(endpoints.getVersion(versionId));
+          const version = normalizeVersion(payload?.version || payload);
+          consecutiveErrors = 0;
+          mergeVersion(version);
+          if (uploadItemRef) {
+            uploadItemRef.status = version.status;
+            renderUploads();
+          }
+          if (version.status === 'ready') {
+            selectVersion(version.id, true);
+            toast(`${version.original_filename}: готов к анализу`);
+          }
+          if (terminalStatuses.has(version.status)) break;
+        } catch (error) {
+          consecutiveErrors += 1;
+          if (consecutiveErrors >= 5) {
+            if (uploadItemRef) {
+              uploadItemRef.status = 'error';
+              uploadItemRef.error = 'Не удалось получить статус обработки';
+            }
+            toast('Не удалось получить статус обработки файла. Обновите список данных.', 'error');
+            break;
+          }
+        }
+        await sleep(Math.min(pollIntervalMs * Math.max(1, consecutiveErrors), 5000));
+      }
+    })().finally(() => {
+      state.pollers.delete(versionId);
+      refresh().catch(() => {});
+    });
+    state.pollers.set(versionId, task);
+    return task;
+  }
+
+  function mergeVersion(incoming) {
+    if (!incoming?.id) return;
+    const existing = state.versionsById.get(incoming.id);
+    if (existing) {
+      Object.assign(existing.version, incoming);
+    } else {
+      let dataset = state.datasets.find(item => item.id === incoming.dataset_id);
+      if (!dataset) {
+        dataset = {
+          id: incoming.dataset_id || `upload-${incoming.id}`,
+          display_name: incoming.original_filename || 'Загруженный файл',
+          versions: []
+        };
+        state.datasets.unshift(dataset);
+      }
+      dataset.versions.unshift(incoming);
+      rebuildVersionIndex();
     }
-
-    bindDropzone(dropzone);
-    bindDropzone(inlineDropzone);
-
-    root.addEventListener('click', handleClick);
-    root.addEventListener('change', handleChange);
     render();
-
-    return {
-      init: () => core.initWorkspace(),
-      openDrawer: () => core.openDrawer(),
-      closeDrawer: () => core.closeDrawer(),
-      showDraftSelection: () => core.showDraftSelection(),
-      setViewedAnalysisVersionIds: ids => core.showAnalysisSelection(ids),
-      getSubmissionVersionIds: () => core.getSubmissionVersionIds(),
-      getState: () => core.state
-    };
+    notify();
   }
+
+  function startPollsForPendingVersions() {
+    state.versionsById.forEach(({ version }) => {
+      if (['uploaded', 'profiling'].includes(version.status)) monitorVersion(version.id);
+    });
+  }
+
+  function cancelUpload(localId) {
+    const item = state.uploadQueue.find(candidate => candidate.localId === localId);
+    if (!item || !['queued', 'uploading'].includes(item.status)) return;
+    if (item.status === 'uploading' && item.xhr) item.xhr.abort();
+    item.status = 'canceled';
+    renderUploads();
+    notify();
+  }
+
+  function selectVersion(versionId, selected = true) {
+    const entry = state.versionsById.get(versionId);
+    if (!entry && selected) return false;
+    if (selected && entry.version.status !== 'ready') return false;
+    const set = new Set(state.draftSelectedVersionIds);
+    selected ? set.add(versionId) : set.delete(versionId);
+    state.draftSelectedVersionIds = [...set];
+    persistSelection();
+    render();
+    notify();
+    return true;
+  }
+
+  function getSelectedVersions() {
+    return state.draftSelectedVersionIds.map(id => state.versionsById.get(id)).filter(entry => entry?.version.status === 'ready');
+  }
+
+  function getReadyVersionIds() {
+    return getSelectedVersions().map(entry => entry.version.id);
+  }
+
+  async function deleteVersion(versionId) {
+    if (!confirm('Скрыть эту версию файла из рабочего пространства?')) return;
+    try {
+      await requestCandidates(endpoints.deleteVersion(versionId), { method: 'DELETE' });
+      selectVersion(versionId, false);
+      await refresh();
+    } catch (error) {
+      toast(`Не удалось удалить файл: ${safeMessage(error)}`, 'error');
+    }
+  }
+
+  function openDrawer() {
+    document.body.classList.add('drawer-open');
+    refs?.dataDrawer?.setAttribute('aria-hidden', 'false');
+    refresh().catch(() => {});
+  }
+
+  function closeDrawer() {
+    document.body.classList.remove('drawer-open');
+    refs?.dataDrawer?.setAttribute('aria-hidden', 'true');
+  }
+
+  function bindDropzone(element, input, options = {}) {
+    if (!element || !input) return;
+    const openPicker = event => {
+      if (event?.target?.closest('button')) return;
+      input.click();
+    };
+    element.addEventListener('click', openPicker);
+    element.addEventListener('keydown', event => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        input.click();
+      }
+    });
+    ['dragenter', 'dragover'].forEach(name => element.addEventListener(name, event => {
+      event.preventDefault();
+      element.classList.add('dragover');
+    }));
+    ['dragleave', 'drop'].forEach(name => element.addEventListener(name, event => {
+      event.preventDefault();
+      element.classList.remove('dragover');
+    }));
+    element.addEventListener('drop', event => queueFiles(event.dataTransfer.files, options));
+    input.addEventListener('change', () => {
+      queueFiles(input.files, options);
+      input.value = '';
+    });
+  }
+
+  function init(domRefs) {
+    refs = domRefs;
+    bindDropzone(refs.inlineDropzone, refs.inlineFileInput);
+    bindDropzone(refs.drawerDropzone, refs.drawerFileInput);
+    refs.composerFileInput?.addEventListener('change', () => {
+      queueFiles(refs.composerFileInput.files);
+      refs.composerFileInput.value = '';
+    });
+    refs.datasetList?.addEventListener('click', event => {
+      const row = event.target.closest('[data-version-id]');
+      const action = event.target.closest('[data-action]')?.dataset.action;
+      if (!row) return;
+      const versionId = row.dataset.versionId;
+      if (action === 'delete-version') {
+        event.stopPropagation();
+        deleteVersion(versionId);
+      } else if (row.classList.contains('selectable')) {
+        selectVersion(versionId, !state.draftSelectedVersionIds.includes(versionId));
+      }
+    });
+    refs.uploadQueue?.addEventListener('click', event => {
+      const button = event.target.closest('[data-cancel-upload]');
+      if (button) cancelUpload(button.dataset.cancelUpload);
+    });
+    refresh().catch(() => {});
+    render();
+  }
+
+  function render() {
+    renderDatasets();
+    renderUploads();
+    renderAttachments();
+    if (refs?.datasetCount) refs.datasetCount.textContent = String(state.versionsById.size);
+    if (refs?.selectedCount) refs.selectedCount.textContent = String(getSelectedVersions().length);
+  }
+
+  function renderDatasets() {
+    if (!refs?.datasetList) return;
+    if (state.loading && !state.initialized) {
+      refs.datasetList.innerHTML = '<div class="empty-state">Загрузка…</div>';
+      return;
+    }
+    if (!state.datasets.length) {
+      refs.datasetList.innerHTML = '<div class="empty-state">Загруженных файлов пока нет</div>';
+      return;
+    }
+    refs.datasetList.innerHTML = state.datasets.map(dataset => `
+      <article class="dataset-card">
+        <div class="dataset-card-head">
+          <div class="file-icon">DATA</div>
+          <div class="dataset-card-name" title="${escapeHtml(dataset.display_name)}">${escapeHtml(dataset.display_name)}</div>
+        </div>
+        <div class="dataset-card-versions">
+          ${dataset.versions.map(version => renderVersion(version)).join('') || '<div class="empty-state">Нет активных версий</div>'}
+        </div>
+      </article>
+    `).join('');
+  }
+
+  function renderVersion(version) {
+    const selected = state.draftSelectedVersionIds.includes(version.id);
+    const selectable = version.status === 'ready';
+    const statusText = ({ ready: 'Готов', profiling: 'Обработка', uploaded: 'В очереди', invalid: 'Ошибка', deleted: 'Удалён' })[version.status] || version.status;
+    return `
+      <div class="version-row ${selectable ? 'selectable' : ''} ${selected ? 'selected' : ''}" data-version-id="${escapeHtml(version.id)}">
+        <span class="version-check">${selected ? '✓' : ''}</span>
+        <div class="file-info">
+          <span class="file-name" title="${escapeHtml(version.original_filename)}">${escapeHtml(version.original_filename)}</span>
+          <span class="file-meta">${escapeHtml(version.format.toUpperCase())} · ${readableBytes(version.size_bytes)}</span>
+        </div>
+        <span class="version-status ${escapeHtml(version.status)}">${escapeHtml(statusText)}</span>
+        ${version.status !== 'deleted' ? '<button class="icon-button" type="button" data-action="delete-version" aria-label="Удалить"><svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3m-8 0 1 13h8l1-13M10 11v5m4-5v5"/></svg></button>' : ''}
+      </div>
+    `;
+  }
+
+  function renderUploads() {
+    const activeItems = state.uploadQueue.filter(item => !['canceled'].includes(item.status)).slice(-8).reverse();
+    const html = activeItems.map(item => {
+      const statusText = ({ queued: 'В очереди', uploading: `Загрузка ${item.progress}%`, profiling: 'Профилирование', ready: 'Готов', invalid: 'Ошибка обработки', error: item.error || 'Ошибка' })[item.status] || item.status;
+      return `
+        <div class="upload-row">
+          <div class="upload-row-main">
+            <div class="file-icon">${escapeHtml(extensionOf(item.file.name).toUpperCase())}</div>
+            <div class="file-info">
+              <span class="file-name">${escapeHtml(item.file.name)}</span>
+              <span class="file-meta">${escapeHtml(statusText)}</span>
+            </div>
+            ${['queued', 'uploading'].includes(item.status) ? `<button class="text-button" type="button" data-cancel-upload="${escapeHtml(item.localId)}">Отмена</button>` : ''}
+          </div>
+          ${item.status === 'uploading' ? `<div class="progress-track"><div class="progress-bar" style="width:${Math.max(0, Math.min(100, item.progress))}%"></div></div>` : ''}
+        </div>
+      `;
+    }).join('');
+    if (refs?.uploadQueue) refs.uploadQueue.innerHTML = html;
+    if (refs?.inlineUploadSummary) refs.inlineUploadSummary.innerHTML = html;
+  }
+
+  function renderAttachments() {
+    if (!refs?.attachmentStrip) return;
+    const entries = getSelectedVersions();
+    refs.attachmentStrip.hidden = entries.length === 0;
+    refs.attachmentStrip.innerHTML = entries.map(({ version }) => `
+      <span class="file-chip">
+        <span class="file-chip-name" title="${escapeHtml(version.original_filename)}">${escapeHtml(version.original_filename)}</span>
+        <button type="button" data-remove-version="${escapeHtml(version.id)}" aria-label="Убрать файл">
+          <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg>
+        </button>
+      </span>
+    `).join('');
+    refs.attachmentStrip.querySelectorAll('[data-remove-version]').forEach(button => button.addEventListener('click', () => selectVersion(button.dataset.removeVersion, false)));
+  }
+
+  function toast(message, type = 'info') {
+    const region = refs?.toastRegion || document.getElementById('toastRegion');
+    if (!region) return;
+    const element = document.createElement('div');
+    element.className = `toast ${type}`;
+    element.textContent = message;
+    region.appendChild(element);
+    setTimeout(() => element.remove(), 4200);
+  }
+
+  function safeMessage(error) {
+    const value = String(error?.message || 'Неизвестная ошибка');
+    return value.length > 240 ? `${value.slice(0, 237)}…` : value;
+  }
+
+  function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>'"]/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[char]);
+  }
+
+  function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
 
   const DatasetWorkspace = {
-    DEFAULT_WORKSPACE_ID,
-    MAX_PARALLEL_UPLOADS,
-    MAX_CONSECUTIVE_POLL_ERRORS,
-    STORAGE_KEYS,
+    init,
+    refresh,
+    subscribe,
+    queueFiles,
+    selectVersion,
+    getSelectedVersions,
+    getReadyVersionIds,
+    openDrawer,
+    closeDrawer,
+    toast,
     escapeHtml,
-    escapeAttribute,
-    pluralize,
-    formatBytes,
-    stemFilename,
-    getFileExtension,
-    isAcceptedUploadFile,
-    splitAcceptedUploadFiles,
-    normalizeVersionIdList,
-    createInitialDatasetWorkspaceState,
-    buildVersionIndex,
-    getVersionEntriesByIds,
-    getDraftReadyVersionIds,
-    createUploadItems,
-    shouldShowCancel,
-    renderUploadMarkup,
-    renderUploadList,
-    renderInlineUploadStatus,
-    renderDatasetCardMarkup,
-    renderDatasetListMarkup,
-    renderComposerMarkup,
-    createDatasetWorkspaceCore,
-    createDatasetWorkspaceController
+    readableBytes
   };
-
-  if (typeof module !== 'undefined' && module.exports) {
-    module.exports = DatasetWorkspace;
-  }
-
-  if (typeof window !== 'undefined') {
-    window.DatasetWorkspace = DatasetWorkspace;
-  }
-  global.DatasetWorkspace = DatasetWorkspace;
-})(typeof window !== 'undefined' ? window : globalThis);
+  window.DatasetWorkspace = DatasetWorkspace;
+})();

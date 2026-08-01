@@ -35,7 +35,7 @@ from agent.runtime.execution_manifest import (
     ExecutionDatasetReference,
     ExecutionManifest,
 )
-from agent.schemas import AnalysisPlan
+from agent.schemas import AnalysisPlan, AnalysisMode
 from api.datasets import build_datasets_router
 from application.datasets.execution import (
     DatasetExecutionError,
@@ -194,6 +194,7 @@ class AnalysisDatasetAttachmentResponse(BaseModel):
 class AnalysisResponse(BaseModel):
     id: str
     question: str
+    analysis_mode: Optional[str] = None
     skill: Optional[str] = None
     status: str
     dataset_version_ids: list[str] = Field(default_factory=list)
@@ -287,7 +288,6 @@ def create_analysis(
     _check_mutation_rate_limit(request.client.host if request.client else "unknown")
 
     analysis_id = str(uuid.uuid4())
-    routing = route_sync(req.question)
     dataset_service = app.state.dataset_service_factory()
     resolver = DatasetExecutionResolver(app.state.dataset_repository_factory())
     try:
@@ -301,6 +301,7 @@ def create_analysis(
 
     selected_version_ids = [item.dataset_version_id for item in dataset_context]
     execution_mode = "attached" if selected_version_ids else "legacy"
+    routing = route_sync(req.question, dataset_context=dataset_context)
 
     plan = generate_plan(
         req.question,
@@ -316,7 +317,7 @@ def create_analysis(
             (
                 analysis_id,
                 req.question,
-                plan.skill.value,
+                plan.skill.value if plan.skill is not None else None,
                 "awaiting_approval",
                 json.dumps(plan.model_dump(), ensure_ascii=False, default=str),
                 execution_mode,
@@ -434,11 +435,17 @@ def revise_analysis(
         from agent.schemas import RoutingResult
 
         routing = RoutingResult(
+            analysis_mode=plan.analysis_mode,
             skill=plan.skill,
             product_codes=updates.get("product_codes", plan.product_codes),
             period_days=updates.get("period_days", plan.period.current_days),
+            skill_confidence=1.0 if plan.skill is not None else 0.0,
         )
-        new_plan = generate_plan(row["question"], routing=routing)
+        new_plan = generate_plan(
+            row["question"],
+            routing=routing,
+            revision_feedback=feedback,
+        )
 
         conn.execute(
             "UPDATE analyses SET plan_json = ?, status = 'awaiting_approval', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
@@ -506,7 +513,7 @@ def management_report(
                 (
                     aid,
                     question,
-                    plan.skill.value,
+                    plan.skill.value if plan.skill is not None else None,
                     "executing",
                     json.dumps(plan.model_dump(), ensure_ascii=False, default=str),
                 ),
@@ -533,12 +540,14 @@ def health():
 def _build_execution_manifest(
     analysis_id: str,
     question: str,
-    skill_id: str,
+    analysis_mode: AnalysisMode,
+    skill_id: str | None,
     resolved_inputs,
 ) -> ExecutionManifest:
     return ExecutionManifest(
         analysis_id=analysis_id,
         question=question,
+        analysis_mode=analysis_mode,
         skill_id=skill_id,
         datasets=[
             ExecutionDatasetReference(
@@ -621,6 +630,7 @@ def _execute_analysis_background(analysis_id: str) -> None:
             manifest = _build_execution_manifest(
                 analysis_id,
                 row["question"],
+                plan.analysis_mode,
                 row["skill"],
                 resolved_inputs,
             )
@@ -672,6 +682,7 @@ def _row_to_response(row=None, analysis_id=None, status=None):
         return AnalysisResponse(
             id=analysis_id,
             question="",
+            analysis_mode=None,
             skill=None,
             status=status or "unknown",
             dataset_version_ids=dataset_version_ids,
@@ -688,6 +699,7 @@ def _row_to_response(row=None, analysis_id=None, status=None):
     return AnalysisResponse(
         id=row["id"],
         question=row["question"],
+        analysis_mode=(plan or {}).get("analysis_mode"),
         skill=row["skill"],
         status=row["status"],
         dataset_version_ids=dataset_version_ids,

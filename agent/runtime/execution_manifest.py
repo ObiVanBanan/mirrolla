@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
+from agent.schemas import AnalysisMode
 from application.datasets.models import DatasetProfile
 from infrastructure.storage.execution_files import MaterializedDatasetFile
 
@@ -22,8 +23,20 @@ class ExecutionManifest(BaseModel):
     manifest_version: str = "1.0"
     analysis_id: str
     question: str
-    skill_id: str
+    analysis_mode: AnalysisMode | None = None
+    skill_id: str | None = None
     datasets: list[ExecutionDatasetReference] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _infer_analysis_mode(cls, data):
+        if not isinstance(data, dict):
+            return data
+        if data.get("analysis_mode") is None:
+            data["analysis_mode"] = (
+                AnalysisMode.SPECIALIZED if data.get("skill_id") else AnalysisMode.GENERAL
+            )
+        return data
 
 
 class AttachedExecutionInput(BaseModel):

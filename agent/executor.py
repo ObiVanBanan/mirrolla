@@ -28,6 +28,7 @@ from agent.runtime.execution_manifest import (
     ExecutionManifest,
 )
 from agent.schemas import (
+    AnalysisMode,
     SkillType,
     AnalysisPlan,
     ExecutionDatasetMetadata,
@@ -357,7 +358,7 @@ def _build_prompt(plan: AnalysisPlan, balances_available: bool) -> str:
     Универсальный формат результата (findings) + skill-специфичная методика (SKILL.md).
     Code Interpreter сам пишет и запускает Python код.
     """
-    skill_md = _load_skill_md(plan.skill)
+    skill_md = _load_skill_md(plan.skill) if plan.skill is not None else ""
     helpers_code = _load_helpers_code()
 
     # Описание гипотез (опционально — CI проверяет, но результат в findings)
@@ -668,7 +669,8 @@ LIST_RESULT_SKILLS = {
 
 def validate_analysis_result(
     parsed: dict,
-    skill: str,
+    skill: str | None,
+    analysis_mode: AnalysisMode,
 ) -> list[str]:
     """
     Семантическая проверка результата CI.
@@ -686,7 +688,7 @@ def validate_analysis_result(
         errors.append("Отсутствует прямой ответ в поле answer")
 
     # Для list-вопросов findings не должен быть пустым
-    if skill in LIST_RESULT_SKILLS:
+    if analysis_mode == AnalysisMode.SPECIALIZED and skill in LIST_RESULT_SKILLS:
         findings = parsed.get("findings", [])
         if not findings:
             errors.append(
@@ -768,13 +770,17 @@ def _execute_legacy(plan: AnalysisPlan, max_retries: int = 2) -> ExecutionResult
     # Семантическая валидация (Шаг 4)
     print("\n  [Executor] Шаг 5b: Валидация результата...")
     parsed_for_validation = _extract_json_from_text(ci_result.get("text", ""))
-    validation_errors = validate_analysis_result(parsed_for_validation or {}, plan.skill.value)
+    validation_errors = validate_analysis_result(
+        parsed_for_validation or {},
+        plan.skill.value if plan.skill is not None else None,
+        plan.analysis_mode,
+    )
     if validation_errors:
         print(f"  [Executor] ⚠ Валидация: {len(validation_errors)} ошибок")
         for ve in validation_errors:
             print(f"     - {ve}")
         # Если findings пустой для list-вопроса — retry через ci_runner self-correction
-        if not findings and plan.skill.value in LIST_RESULT_SKILLS and not ci_result.get("_validated_retry"):
+        if not findings and plan.skill is not None and plan.skill.value in LIST_RESULT_SKILLS and not ci_result.get("_validated_retry"):
             print(f"  [Executor] → retry с указанием ошибок валидации...")
             correction = (
                 f"Результат не прошёл валидацию:\n{json.dumps(validation_errors, ensure_ascii=False)}\n"
@@ -823,6 +829,7 @@ def _execute_legacy(plan: AnalysisPlan, max_retries: int = 2) -> ExecutionResult
         manager_answer = reporter_synthesize(
             question=plan.question,
             skill=plan.skill,
+            analysis_mode=plan.analysis_mode,
             findings=findings,
             limitations=limitations,
             answer_status=answer_status,
@@ -835,6 +842,7 @@ def _execute_legacy(plan: AnalysisPlan, max_retries: int = 2) -> ExecutionResult
 
     result = ExecutionResult(
         question=plan.question,
+        analysis_mode=plan.analysis_mode,
         skill=plan.skill,
         answer_status=answer_status,
         findings=findings,
@@ -948,6 +956,7 @@ def _execute_exemplar(plan: AnalysisPlan, max_retries: int = 2) -> ExecutionResu
         manager_answer = reporter_synthesize(
             question=plan.question,
             skill=plan.skill,
+            analysis_mode=plan.analysis_mode,
             findings=findings,
             limitations=limitations,
             answer_status=answer_status,
@@ -959,12 +968,14 @@ def _execute_exemplar(plan: AnalysisPlan, max_retries: int = 2) -> ExecutionResu
 
     return ExecutionResult(
         question=plan.question,
+        analysis_mode=plan.analysis_mode,
         skill=plan.skill,
         answer_status=answer_status,
         findings=findings,
         hypothesis_results=hypothesis_results,
         charts=ci_result.get("charts", []),
         summary=manager_answer,
+        answer=manager_answer,
         limitations=limitations,
         code_generated=None,
         errors=errors,
@@ -1000,8 +1011,9 @@ def _build_attached_prompt(
     plan: AnalysisPlan,
     execution_manifest: ExecutionManifest,
 ) -> str:
-    skill_md = _load_skill_md(plan.skill)
+    skill_md = _load_skill_md(plan.skill) if plan.skill is not None else ""
     helpers_code = _load_helpers_code()
+    skill_section = f"## Skill\n{plan.skill.value}\n\n## Skill instructions\n{skill_md}\n\n" if plan.skill is not None else "## Skill\nnone\n\n"
     hypotheses_text = []
     for hypothesis in plan.hypotheses:
         hypotheses_text.append(
@@ -1011,9 +1023,8 @@ def _build_attached_prompt(
         )
     return (
         f"{UNIVERSAL_ANALYSIS_INSTRUCTIONS}\n\n"
-        f"## Skill\n{plan.skill.value}\n\n"
+        f"{skill_section}"
         f"## Question\n{plan.question}\n\n"
-        f"## Skill instructions\n{skill_md}\n\n"
         f"## Attached execution manifest\n"
         f"analysis_id={execution_manifest.analysis_id}\n"
         f"manifest_version={execution_manifest.manifest_version}\n\n"
@@ -1032,7 +1043,7 @@ def _validate_attached_execution_input(
 
     if manifest.analysis_id != attached_input.analysis_id:
         raise InvalidExecutionManifestError("Manifest analysis_id does not match attached input")
-    if manifest.skill_id != plan.skill.value:
+    if manifest.skill_id != (plan.skill.value if plan.skill is not None else None):
         raise InvalidExecutionManifestError("Manifest skill_id does not match analysis plan")
     if manifest.question != plan.question:
         raise InvalidExecutionManifestError("Manifest question does not match analysis plan")
@@ -1113,6 +1124,7 @@ def _execute_attached(
         manager_answer = reporter_synthesize(
             question=plan.question,
             skill=plan.skill,
+            analysis_mode=plan.analysis_mode,
             findings=findings,
             limitations=limitations,
             answer_status=answer_status,
@@ -1124,12 +1136,14 @@ def _execute_attached(
 
     return ExecutionResult(
         question=plan.question,
+        analysis_mode=plan.analysis_mode,
         skill=plan.skill,
         answer_status=answer_status,
         findings=findings,
         hypothesis_results=hypothesis_results,
         charts=ci_result.get("charts", []),
         summary=manager_answer,
+        answer=manager_answer,
         limitations=limitations,
         code_generated=None,
         errors=errors,
@@ -1170,7 +1184,7 @@ def main():
     # Шаг 1: Plan
     print("\n--- Шаг 1: Planner ---")
     analysis_plan = generate_plan(question)
-    print(f"Skill: {analysis_plan.skill.value}")
+    print(f"Skill: {analysis_plan.skill.value if analysis_plan.skill is not None else "none"}")
     print(f"Гипотез: {len(analysis_plan.hypotheses)}")
 
     # Шаг 2: Execute

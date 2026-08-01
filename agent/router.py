@@ -1,142 +1,61 @@
 """
-agent/router.py — Router: классификация вопроса менеджера.
-
-Определяет:
-  - какой skill нужен (из 4 классов)
-  - коды товаров в вопросе
-  - период анализа в днях
-
-Использует OpenAI API (gpt-4o-mini) с structured output.
-Fallback: keyword-классификация без LLM.
-
-Запуск:
-    python -m agent.router "Почему упали продажи ЦБ-00007397?"
+Router for Mirrolla analyses.
 """
 
+from __future__ import annotations
+
+import json
 import os
 import re
 import sys
-import json
+from collections.abc import Sequence
+
 from dotenv import load_dotenv
 
-from agent.schemas import SkillType, RoutingResult
+from agent.schemas import AnalysisMode, RoutingResult, SkillType
+from application.datasets.execution import (
+    ResolvedDatasetInput,
+    serialize_untrusted_dataset_context,
+)
 
-# .env — переменная token (OpenAI API key)
 load_dotenv()
 
-# === Конфигурация LLM ===
 MODEL_NAME = os.getenv("ROUTER_MODEL", "gpt-4o-mini")
 API_KEY = os.getenv("token", "")
 
-# === System Prompt ===
+SYSTEM_PROMPT = """Ты определяешь, нужен ли вопросу специализированный skill.
 
-SYSTEM_PROMPT = """Ты — маршрутизатор аналитического ассистента Mirrolla.
+Выбирай specialized только тогда, когда намерение пользователя явно соответствует одному
+из доступных skills. Для обычных операций над приложенным CSV, XLSX или JSON выбирай general.
 
-Твоя задача: по вопросу менеджера определить:
-1. skill — какой аналитический модуль нужен
-2. product_codes — коды товаров (формат ЦБ-XXXXXXXX или ФР-XXXXXXXX), если упомянуты
-3. period_days — период анализа в днях
+Правила:
+- В general analysis_mode = "general", skill = null.
+- В specialized analysis_mode = "specialized", skill должен быть одним из доступных skills.
+- Не выбирай skill только потому, что система ожидает непустое значение.
+- Не считай любой числовой датасет анализом продаж.
+- Профиль датасета помогает понять структуру данных, но skill выбирается по намерению пользователя.
 
-## Доступные skills:
+Примеры general:
+{"question":"Сколько строк в mapping_results.csv?","analysis_mode":"general","skill":null}
+{"question":"Покажи записи, где status не равен mapped","analysis_mode":"general","skill":null}
+{"question":"Найди дубликаты и пропуски","analysis_mode":"general","skill":null}
 
-1. **sales-decline-analysis** — анализ причин падения продаж товара.
-   Ключевые слова: упали, снизились, падение, почему упали, просадка, хуже, меньше продаж.
-
-2. **inventory-planning** — остатки, склад, план производства.
-   Ключевые слова: заканчивается, остатки, склад, заказать, производство, произвести, дозаказать, запас, критические остатки.
-
-3. **portfolio-growth** — рост/падение портфеля, сравнение с рынком/категорией.
-   Ключевые слова: растёт, растёт быстрее, топ растущих, топ падающих, динамика, рынок, категория, лидеры роста.
-
-4. **reviews-and-pricing** — отзывы, жалобы, цены.
-   Ключевые слова: отзывы, плохие отзывы, жалобы, негативные, рейтинг, цена, изменить цену, ценовой эксперимент.
-
-## Few-shot примеры:
-
-Вопрос: "Почему упали продажи шампуня с кератином?"
-→ skill: sales-decline-analysis, product_codes: [], period_days: 14
-
-Вопрос: "Почему снизились продажи ЦБ-00007397?"
-→ skill: sales-decline-analysis, product_codes: ["ЦБ-00007397"], period_days: 14
-
-Вопрос: "Что заканчивается на складе?"
-→ skill: inventory-planning, product_codes: [], period_days: 7
-
-Вопрос: "Что растёт быстрее рынка?"
-→ skill: portfolio-growth, product_codes: [], period_days: 14
-
-Вопрос: "Какие отзывы плохие?"
-→ skill: reviews-and-pricing, product_codes: [], period_days: 30
-
-Вопрос: "Закажи производство репейного масла"
-→ skill: inventory-planning, product_codes: [], period_days: 14
-
-Вопрос: "Какие товары требуют изменения цены?"
-→ skill: reviews-and-pricing, product_codes: [], period_days: 30
-
-Вопрос: "Что нужно заказать в производство за последний месяц?"
-→ skill: inventory-planning, product_codes: [], period_days: 30
-
-## Правила:
-- Если в вопросе есть код товара (ЦБ-XXXXXXXX или ФР-XXXXXXXX) — извлекай его в product_codes.
-- Если кодов нет — product_codes = [] (пустой массив).
-- "за последний месяц" → period_days: 30, "за неделю" → 7, "за две недели" → 14.
-- Если период не указан — period_days: 14.
-- Классифицируй строго по 4 skill-классам, ничего не выдумывай.
+Примеры specialized:
+{"question":"Почему упали продажи артикула 123?","analysis_mode":"specialized","skill":"sales-decline-analysis"}
+{"question":"Какие товары скоро закончатся и что заказать?","analysis_mode":"specialized","skill":"inventory-planning"}
 """
 
-# === Regex для извлечения кодов товаров ===
-# Коды товаров: ЦБ-XXXXXXXX (Косметика/БАД) или ФР-XXXXXXXX (Фармация)
-# ВАЖНО: ЦБ (буквы Б), НЕ ЦР (буква Р). Regex (ЦБ|ФР)-\d{8}
 CODE_PATTERN = re.compile(r"(?:ЦБ|ФР)-\d{8}")
-
-# === Keyword fallback ===
 
 KEYWORD_MAP: dict[SkillType, list[str]] = {
     SkillType.SALES_DECLINE: ["упал", "сниз", "падени", "просадк", "хуже", "меньше продаж"],
     SkillType.INVENTORY: ["заканчив", "остат", "склад", "заказать", "произв", "дозаказ", "запас", "критическ"],
     SkillType.PORTFOLIO_GROWTH: ["растёт", "растет", "быстрее", "топ растущ", "топ падающ", "динамик", "рынок", "категори", "лидер"],
-    SkillType.REVIEWS_PRICING: ["отзыв", "плохие", "жалоб", "негативн", "рейтинг", "цен", "жалоб"],
+    SkillType.REVIEWS_PRICING: ["отзыв", "плохие", "жалоб", "негативн", "рейтинг", "цен", "цена"],
 }
 
 
-def _keyword_fallback(text: str) -> RoutingResult:
-    """
-    Keyword-классификация без LLM.
-
-    Используется если LLM недоступен или вернул ошибку.
-    """
-    text_lower = text.lower()
-
-    # Считаем совпадения для каждого skill
-    scores: dict[SkillType, int] = {s: 0 for s in SkillType}
-    for skill, keywords in KEYWORD_MAP.items():
-        for kw in keywords:
-            if kw in text_lower:
-                scores[skill] += 1
-
-    # Выбираем skill с максимальным счётом
-    best_skill = max(scores, key=lambda s: scores[s])
-
-    # Если ничего не совпало — дефолт на sales-decline
-    if scores[best_skill] == 0:
-        best_skill = SkillType.SALES_DECLINE
-
-    # Извлекаем коды товаров
-    codes = CODE_PATTERN.findall(text)
-
-    # Определяем период
-    period = _extract_period(text)
-
-    return RoutingResult(
-        skill=best_skill,
-        product_codes=codes,
-        period_days=period,
-    )
-
-
 def _extract_period(text: str) -> int:
-    """Извлечь период в днях из текста вопроса."""
     text_lower = text.lower()
     if "месяц" in text_lower:
         return 30
@@ -144,23 +63,70 @@ def _extract_period(text: str) -> int:
         return 14
     if "недел" in text_lower:
         return 7
-    return 14  # дефолт
+    return 14
 
 
-def route_sync(text: str) -> RoutingResult:
-    """Синхронная обёртка для CLI и API.
+def _build_dataset_context_block(dataset_context: Sequence[ResolvedDatasetInput] | None) -> str:
+    if not dataset_context:
+        return ""
+    return (
+        "\n\n## Attached dataset profiles\n"
+        "Используй это только как контекст структуры данных.\n"
+        "Отсутствие специализированного skill не является ошибкой.\n\n"
+        f"{serialize_untrusted_dataset_context(dataset_context)}"
+    )
 
-    Безопасна для вызова из async event loop (FastAPI) —
-    вызывает sync-путь напрямую, без event loop манипуляций.
-    """
-    return _route_sync_impl(text)
+
+def _keyword_fallback(
+    text: str,
+    dataset_context: Sequence[ResolvedDatasetInput] | None = None,
+) -> RoutingResult:
+    del dataset_context
+    text_lower = text.lower()
+    scores: dict[SkillType, int] = {skill: 0 for skill in SkillType}
+    for skill, keywords in KEYWORD_MAP.items():
+        for keyword in keywords:
+            if keyword in text_lower:
+                scores[skill] += 1
+
+    best_skill = max(scores, key=lambda skill: scores[skill])
+    best_score = scores[best_skill]
+    codes = CODE_PATTERN.findall(text)
+    period = _extract_period(text)
+
+    if best_score <= 0:
+        return RoutingResult(
+            analysis_mode=AnalysisMode.GENERAL,
+            skill=None,
+            skill_confidence=0.0,
+            product_codes=codes,
+            period_days=period,
+        )
+
+    confidence = min(1.0, 0.35 + 0.2 * best_score)
+    return RoutingResult(
+        analysis_mode=AnalysisMode.SPECIALIZED,
+        skill=best_skill,
+        skill_confidence=confidence,
+        product_codes=codes,
+        period_days=period,
+    )
 
 
-def _route_sync_impl(text: str) -> RoutingResult:
-    """Синхронная маршрутизация — работает в любом контексте."""
+def route_sync(
+    text: str,
+    dataset_context: Sequence[ResolvedDatasetInput] | None = None,
+) -> RoutingResult:
+    return _route_sync_impl(text, dataset_context=dataset_context)
+
+
+def _route_sync_impl(
+    text: str,
+    dataset_context: Sequence[ResolvedDatasetInput] | None = None,
+) -> RoutingResult:
     if not API_KEY:
-        print("  [Router] ⚠ API ключ не найден, использую keyword-fallback")
-        return _keyword_fallback(text)
+        print("  [Router] API key not found, using keyword fallback")
+        return _keyword_fallback(text, dataset_context=dataset_context)
 
     try:
         from langchain_openai import ChatOpenAI
@@ -173,46 +139,37 @@ def _route_sync_impl(text: str) -> RoutingResult:
         structured_llm = llm.with_structured_output(RoutingResult)
         result = structured_llm.invoke(
             [
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": SYSTEM_PROMPT + _build_dataset_context_block(dataset_context)},
                 {"role": "user", "content": text},
             ]
         )
         return result
+    except Exception as exc:
+        print(f"  [Router] LLM error: {exc}")
+        print("  [Router] -> fallback to keyword routing")
+        return _keyword_fallback(text, dataset_context=dataset_context)
 
-    except Exception as e:
-        print(f"  [Router] ⚠ LLM ошибся: {e}")
-        print("  [Router] → fallback на keyword-классификацию")
-        return _keyword_fallback(text)
-
-
-# === CLI ===
 
 def main():
     if len(sys.argv) < 2:
-        print("Использование: python -m agent.router \"Вопрос менеджера\"")
-        print()
-        print("Примеры:")
-        print('  python -m agent.router "Почему упали продажи ЦБ-00007397?"')
-        print('  python -m agent.router "Что заканчивается на складе?"')
-        print('  python -m agent.router "Какие отзывы плохие?"')
+        print('Usage: python -m agent.router "Question"')
         sys.exit(1)
 
     question = " ".join(sys.argv[1:])
-    print(f"Вопрос: {question}")
-    print()
-
     result = route_sync(question)
-
-    print("Результат маршрутизации:")
-    print(json.dumps(
-        {
-            "skill": result.skill.value,
-            "product_codes": result.product_codes,
-            "period_days": result.period_days,
-        },
-        ensure_ascii=False,
-        indent=2,
-    ))
+    print(
+        json.dumps(
+            {
+                "analysis_mode": result.analysis_mode.value,
+                "skill": result.skill.value if result.skill is not None else None,
+                "skill_confidence": result.skill_confidence,
+                "product_codes": result.product_codes,
+                "period_days": result.period_days,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
 
 
 if __name__ == "__main__":

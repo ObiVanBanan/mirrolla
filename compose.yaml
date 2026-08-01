@@ -20,15 +20,14 @@ services:
   ui:
     image: nginx:alpine
     container_name: mirrolla-ui
-    volumes:
-      - ./ui/mirrolla_assistant.html:/usr/share/nginx/html/index.html:ro
-      - ./ui/dataset_workspace.js:/usr/share/nginx/html/dataset_workspace.js:ro
-      - ./ui/nginx.conf:/etc/nginx/nginx.conf:ro
-    environment:
-      # Внутри Docker сети api доступен по hostname "api"
-      - API_HOST=localhost:8000
     ports:
       - "8080:80"
+    volumes:
+      - ./ui/mirrolla_assistant.html:/usr/share/nginx/html/index.html:ro
+      - ./ui/mirrolla.css:/usr/share/nginx/html/mirrolla.css:ro
+      - ./ui/app.js:/usr/share/nginx/html/app.js:ro
+      - ./ui/dataset_workspace.js:/usr/share/nginx/html/dataset_workspace.js:ro
+      - ./ui/nginx.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:
       api:
         condition: service_healthy

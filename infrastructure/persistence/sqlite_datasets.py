@@ -118,6 +118,12 @@ class SqliteDatasetRepository:
                 SELECT id, workspace_id, display_name, source_type, created_at
                 FROM datasets
                 WHERE workspace_id = ?
+                  AND EXISTS (
+                      SELECT 1
+                      FROM dataset_versions
+                      WHERE dataset_id = datasets.id
+                        AND status != 'deleted'
+                  )
                 ORDER BY created_at, id
                 """,
                 (workspace_id,),
