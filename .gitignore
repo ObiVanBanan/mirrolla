@@ -25,6 +25,8 @@ reports/output/
 deploy/vllm/.venv/
 deploy/vllm/.venv-ubuntu24/
 data/runtime/
+.runtime/
+data/charts/*/
 
 # IDE
 .vscode/

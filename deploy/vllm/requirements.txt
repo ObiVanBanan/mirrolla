@@ -1,2 +1,1 @@
 vllm
-vllm-gguf-plugin

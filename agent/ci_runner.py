@@ -112,6 +112,8 @@ class CIRunner:
                 "text": "\n\n".join(text_parts),
                 "charts": chart_paths,
                 "error": "",
+                "code": None,
+                "attempts": 1,
             }
         except Exception:
             return {
@@ -119,6 +121,8 @@ class CIRunner:
                 "text": "",
                 "charts": [],
                 "error": "Code Interpreter execution failed",
+                "code": None,
+                "attempts": 1,
             }
         finally:
             self._cleanup_files()

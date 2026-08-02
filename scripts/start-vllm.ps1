@@ -5,15 +5,12 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repoRoot = (Resolve-Path -LiteralPath $ProjectPath).Path
-Push-Location $repoRoot
-try {
-    $wslRepoRoot = python -m agent.runtime.gemma_local --wsl-path $repoRoot
-} finally {
-    Pop-Location
-}
+$drive = $repoRoot.Substring(0, 1).ToLowerInvariant()
+$rest = $repoRoot.Substring(2).Replace('\', '/').TrimStart('/')
+$wslRepoRoot = "/mnt/$drive/$rest"
 
 if (-not $wslRepoRoot) {
     throw "Failed to convert project path to a WSL path."
 }
 
-wsl.exe -d $Distro -- bash -lc "cd '$wslRepoRoot' && bash scripts/vllm/start_gemma4.sh"
+wsl.exe -d $Distro -- bash -lc "cd '$wslRepoRoot' && bash scripts/vllm/start_qwen_coder.sh"

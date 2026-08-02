@@ -683,9 +683,17 @@ def validate_analysis_result(
         errors.append("Результат пустой (нет JSON)")
         return errors
 
-    # answer должен быть
-    if not parsed.get("answer"):
+    allowed_statuses = {"answered", "partial", "not_enough_data"}
+    answer_status = parsed.get("answer_status")
+    if answer_status not in allowed_statuses:
+        errors.append("Некорректный answer_status")
+
+    if not parsed.get("answer") and not parsed.get("summary"):
         errors.append("Отсутствует прямой ответ в поле answer")
+
+    limitations = parsed.get("limitations", [])
+    if not isinstance(limitations, list):
+        errors.append("Поле limitations должно быть списком")
 
     # Для list-вопросов findings не должен быть пустым
     if analysis_mode == AnalysisMode.SPECIALIZED and skill in LIST_RESULT_SKILLS:
@@ -739,13 +747,13 @@ def _execute_legacy(plan: AnalysisPlan, max_retries: int = 2) -> ExecutionResult
     print(f"  [Executor] Prompt: {len(prompt)} символов")
 
     # Шаг 4: Запуск Code Interpreter (self-correction встроен в ci_runner)
-    from agent.ci_runner import CIRunner
+    from agent.runtime.runner_factory import create_analysis_runner
 
     errors = []
     limitations = list(plan.limitations)
     charts = []
 
-    runner = CIRunner()
+    runner = create_analysis_runner()
     try:
         ci_result = runner.run_analysis(
             prompt=prompt,
@@ -789,7 +797,7 @@ def _execute_legacy(plan: AnalysisPlan, max_retries: int = 2) -> ExecutionResult
             )
             # Дополнительный retry через предыдущий run
             try:
-                runner2 = CIRunner()
+                runner2 = create_analysis_runner()
                 ci_result2 = runner2.run_analysis(
                     prompt=prompt + f"\n\n## ⚠️ ВАЛИДАЦИЯ ПРЕДЫДУЩЕЙ ПОПЫТКИ:\n{correction}",
                     file_paths=file_paths,
@@ -850,7 +858,7 @@ def _execute_legacy(plan: AnalysisPlan, max_retries: int = 2) -> ExecutionResult
         charts=charts,
         summary=manager_answer,  # ответ от Reporter LLM (не CI answer)
         limitations=limitations,
-        code_generated=None,
+        code_generated=ci_result.get("code"),
         errors=errors,
     )
 
@@ -915,9 +923,9 @@ def _execute_exemplar(plan: AnalysisPlan, max_retries: int = 2) -> ExecutionResu
     errors: list[str] = []
 
     print("\n  [Executor] Шаг 2: Запуск Code Interpreter...")
-    from agent.ci_runner import CIRunner
+    from agent.runtime.runner_factory import create_analysis_runner
 
-    runner = CIRunner()
+    runner = create_analysis_runner()
     try:
         ci_result = runner.run_analysis(
             prompt=prompt,
@@ -977,7 +985,7 @@ def _execute_exemplar(plan: AnalysisPlan, max_retries: int = 2) -> ExecutionResu
         summary=manager_answer,
         answer=manager_answer,
         limitations=limitations,
-        code_generated=None,
+        code_generated=ci_result.get("code"),
         errors=errors,
     )
 
@@ -1096,11 +1104,11 @@ def _execute_attached(
     attached_input: AttachedExecutionInput,
     max_retries: int = 2,
 ) -> ExecutionResult:
-    from agent.ci_runner import CIRunner
+    from agent.runtime.runner_factory import create_analysis_runner
 
     _validate_attached_execution_input(plan, attached_input)
     prompt = _build_attached_prompt(plan, attached_input.manifest)
-    runner = CIRunner()
+    runner = create_analysis_runner()
     errors: list[str] = []
     limitations = list(plan.limitations)
     execution_metadata = _build_execution_metadata(
@@ -1117,6 +1125,16 @@ def _execute_attached(
 
     findings, hypothesis_results, answer_status, answer, extra_lim = _parse_ci_result(ci_result, plan)
     limitations.extend(extra_lim)
+    parsed_for_validation = _extract_json_from_text(ci_result.get("text", ""))
+    validation_errors = validate_analysis_result(
+        parsed_for_validation or {},
+        plan.skill.value if plan.skill is not None else None,
+        plan.analysis_mode,
+    )
+    if validation_errors:
+        limitations.append("Validation issues: " + "; ".join(validation_errors))
+        if answer_status == "answered":
+            answer_status = "partial"
 
     try:
         from agent.reporter import synthesize as reporter_synthesize
@@ -1145,7 +1163,7 @@ def _execute_attached(
         summary=manager_answer,
         answer=manager_answer,
         limitations=limitations,
-        code_generated=None,
+        code_generated=ci_result.get("code"),
         errors=errors,
         execution_metadata=execution_metadata,
     )
@@ -1158,6 +1176,21 @@ def execute(
     attached_input: AttachedExecutionInput | None = None,
     max_retries: int = 2,
 ) -> ExecutionResult:
+    if attached_input is None and plan.analysis_mode == AnalysisMode.GENERAL and plan.skill is None:
+        return ExecutionResult(
+            question=plan.question,
+            analysis_mode=AnalysisMode.GENERAL,
+            skill=None,
+            answer_status="not_enough_data",
+            findings=[],
+            hypothesis_results=[],
+            charts=[],
+            summary="Для общего анализа необходимо выбрать датасет.",
+            answer="Для общего анализа необходимо выбрать датасет.",
+            limitations=["К анализу не прикреплена версия датасета."],
+            code_generated=None,
+            errors=[],
+        )
     if attached_input is not None:
         return _execute_attached(
             plan,

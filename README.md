@@ -21,12 +21,44 @@ Planner (gpt-4o) → структурированный план (гипотез
   ↓
 [HITL interrupt — approve / revise / reject]
   ↓
-Executor (OpenAI Code Interpreter) → фактура (findings)
+Executor
+  ├── local_qwen: Qwen через vLLM → Docker Python sandbox
+  └── openai_ci: OpenAI Code Interpreter, optional rollback backend
+  → фактура (findings)
   ↓
 Reporter (gpt-4o) → человекочитаемый ответ менеджеру
 ```
 
-**Стек:** Python 3.12, FastAPI, LangGraph, OpenAI Responses API (Code Interpreter), SQLite checkpointer.
+**Стек:** Python 3.12, FastAPI, LangGraph, локальный vLLM, Docker sandbox, OpenAI rollback backend, SQLite checkpointer.
+
+## Локальный runtime (WSL)
+
+```bash
+# 1. Собрать sandbox image
+bash scripts/build-analysis-sandbox.sh
+
+# 2. Запустить vLLM с Qwen
+bash scripts/vllm/start_qwen_coder.sh
+
+# 3. Проверить OpenAI-compatible endpoint
+python scripts/vllm/probe_qwen_coder.py
+
+# 4. Запустить API в WSL / на host
+export EXECUTION_BACKEND=local_qwen
+uvicorn api.main:app --host 127.0.0.1 --port 8000
+```
+
+Compose-режим пока не является основным способом запуска `local_qwen`: для MVP предполагается, что `vLLM` и API работают напрямую в WSL/host, где доступен Docker daemon. В `docker compose` безопасный mount Docker socket не добавлялся.
+
+## Безопасность local_qwen
+
+- Сгенерированный код считается недоверенным и не выполняется в процессе API.
+- Python запускается только в отдельном Docker sandbox.
+- Контейнер стартует с `--network none`.
+- Входные файлы монтируются только как read-only.
+- Корневой filesystem контейнера запускается в read-only режиме.
+- Используются ограничения по памяти, CPU, PID и timeout.
+- Этот sandbox предназначен только для generated analytical scripts, а не для произвольного пользовательского Python.
 
 ## Быстрый старт (Docker)
 
@@ -45,7 +77,7 @@ docker compose up --build
 
 ## Быстрый старт (без Docker, локально)
 
-**Требования:** Python 3.12+, доступ к OpenAI API.
+**Требования:** Python 3.12+. Для `local_qwen` также нужны WSL2, запущенный vLLM и Docker daemon. Для `openai_ci` нужен доступ к OpenAI API.
 
 ```bash
 # 1. Виртуальное окружение
@@ -57,7 +89,9 @@ pip install -r requirements.txt
 
 # 3. Конфиг
 cp .env.example .env
-# Вписать OPENAI_API_KEY (= переменная token)
+# Выбрать backend:
+# - local_qwen: локальный Qwen + Docker sandbox
+# - openai_ci: OpenAI Code Interpreter
 
 # 4. Данные
 # Положить xlsx-файлы в data/:
@@ -139,8 +173,9 @@ mirrolla/
 ├── agent/
 │   ├── router.py         # классификация вопроса
 │   ├── planner.py        # план анализа
-│   ├── executor.py       # запуск через OpenAI Code Interpreter
-│   ├── ci_runner.py      # Responses API + Code Interpreter
+│   ├── executor.py       # общий execution flow
+│   ├── ci_runner.py      # hosted OpenAI rollback backend
+│   └── runtime/          # local_qwen runtime + sandbox
 │   ├── reporter.py       # LLM-синтез ответа
 │   ├── graph.py          # LangGraph StateGraph + interrupt
 │   ├── nodes.py          # узлы графа
@@ -169,6 +204,13 @@ mirrolla/
 | Переменная | Назначение | Дефолт |
 |------------|------------|--------|
 | `token` | OpenAI API key | (обязательно) |
+| `EXECUTION_BACKEND` | `local_qwen` или `openai_ci` | `local_qwen` |
+| `LOCAL_LLM_BASE_URL` | OpenAI-compatible vLLM endpoint | `http://127.0.0.1:8010/v1` |
+| `LOCAL_LLM_API_KEY` | API key локального vLLM | `mirrolla-local` |
+| `LOCAL_LLM_MODEL` | Served model name в vLLM | `qwen-coder-local` |
+| `LOCAL_LLM_TIMEOUT_SECONDS` | Timeout запроса к локальной модели | `180` |
+| `LOCAL_LLM_MAX_TOKENS` | Верхняя граница генерации кода | `2500` |
+| `LOCAL_LLM_TEMPERATURE` | Температура для генерации кода | `0.1` |
 | `MIRROLLA_API` | URL API для авто-отчёта | `http://127.0.0.1:8000/api/v1` |
 | `ROUTER_MODEL` | Модель для router | `gpt-4o-mini` |
 | `PLANNER_MODEL` | Модель для planner | `gpt-4o` |

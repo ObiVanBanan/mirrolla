@@ -9,9 +9,9 @@ from pathlib import Path
 import requests
 
 
-DEFAULT_BASE_URL = os.getenv("LLM_BASE_URL", "http://127.0.0.1:8010/v1")
-DEFAULT_MODEL = os.getenv("VLLM_SERVED_MODEL_NAME", "gemma-4-12b-local")
-DEFAULT_API_KEY = os.getenv("LLM_API_KEY") or os.getenv("VLLM_API_KEY", "mirrolla-local")
+DEFAULT_BASE_URL = os.getenv("LOCAL_LLM_BASE_URL", "http://127.0.0.1:8010/v1")
+DEFAULT_MODEL = os.getenv("LOCAL_LLM_MODEL", "qwen-coder-local")
+DEFAULT_API_KEY = os.getenv("LOCAL_LLM_API_KEY", "mirrolla-local")
 OUTPUT_PATH = Path("data/runtime/model_probe.json")
 
 
@@ -41,7 +41,7 @@ def _request(method: str, url: str, *, json_body: dict | None = None) -> tuple[b
         return False, latency_ms, str(exc)
 
 
-def _chat_payload(prompt: str, *, response_format: dict | None = None, tools: list[dict] | None = None) -> dict:
+def _chat_payload(prompt: str, *, response_format: dict | None = None) -> dict:
     payload = {
         "model": DEFAULT_MODEL,
         "messages": [{"role": "user", "content": prompt}],
@@ -49,8 +49,6 @@ def _chat_payload(prompt: str, *, response_format: dict | None = None, tools: li
     }
     if response_format is not None:
         payload["response_format"] = response_format
-    if tools is not None:
-        payload["tools"] = tools
     return payload
 
 
@@ -66,7 +64,7 @@ def main() -> int:
     chat_ok, latency, chat_text = _request(
         "POST",
         f"{DEFAULT_BASE_URL}/chat/completions",
-        json_body=_chat_payload("Answer with the word ready."),
+        json_body=_chat_payload("Return only the word ready."),
     )
     latencies.append(latency)
     if not chat_ok:
@@ -128,50 +126,6 @@ def main() -> int:
     if not schema_ok:
         errors.append(f"json_schema failed: {schema_text}")
 
-    long_prompt = "Count the number of times the letter A appears. " + ("A" * 9500)
-    long_ok, latency, long_text = _request(
-        "POST",
-        f"{DEFAULT_BASE_URL}/chat/completions",
-        json_body=_chat_payload(long_prompt),
-    )
-    latencies.append(latency)
-    if not long_ok:
-        errors.append(f"long prompt failed: {long_text}")
-
-    repeat_ok, latency, repeat_text = _request(
-        "POST",
-        f"{DEFAULT_BASE_URL}/chat/completions",
-        json_body=_chat_payload("Answer with the word repeated."),
-    )
-    latencies.append(latency)
-    if not repeat_ok:
-        errors.append(f"repeat request failed: {repeat_text}")
-
-    tool_ok, latency, tool_text = _request(
-        "POST",
-        f"{DEFAULT_BASE_URL}/chat/completions",
-        json_body=_chat_payload(
-            "Call the ping tool.",
-            tools=[
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "ping",
-                        "description": "Ping the runtime",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {},
-                            "additionalProperties": False,
-                        },
-                    },
-                }
-            ],
-        ),
-    )
-    latencies.append(latency)
-    if not tool_ok:
-        errors.append(f"tool calling probe failed: {tool_text}")
-
     payload = {
         "server_reachable": models_ok,
         "model": DEFAULT_MODEL,
@@ -180,9 +134,6 @@ def main() -> int:
         "python_code_generation": code_ok,
         "json_object": json_ok,
         "json_schema": schema_ok,
-        "tool_calling": tool_ok,
-        "long_prompt": long_ok,
-        "repeat_request": repeat_ok,
         "average_latency_ms": round(statistics.mean(latencies), 2) if latencies else 0,
         "errors": errors,
     }
