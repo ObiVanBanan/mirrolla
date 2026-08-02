@@ -21,6 +21,11 @@ __pycache__/
 # Reports output
 reports/output/
 
+# Local vLLM runtime
+deploy/vllm/.venv/
+deploy/vllm/.venv-ubuntu24/
+data/runtime/
+
 # IDE
 .vscode/
 .idea/
