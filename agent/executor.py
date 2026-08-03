@@ -55,6 +55,20 @@ CHARTS_DIR = os.path.join(DATA_DIR, "charts")
 PROJECT_ROOT = os.path.dirname(os.path.dirname(__file__))
 
 
+def _create_runner():
+    from agent.runtime.runner_factory import create_analysis_runner
+
+    return create_analysis_runner()
+
+
+def _normalize_execution_retries(max_retries: int) -> int:
+    return min(max(max_retries, 0), 2)
+
+
+def _runtime_failed(ci_result: dict) -> bool:
+    return ci_result.get("status") != "completed" or not ci_result.get("text")
+
+
 # === Файлы данных для загрузки в Code Interpreter ===
 
 def _collect_data_files(plan: AnalysisPlan) -> list[str]:
@@ -747,18 +761,17 @@ def _execute_legacy(plan: AnalysisPlan, max_retries: int = 2) -> ExecutionResult
     print(f"  [Executor] Prompt: {len(prompt)} символов")
 
     # Шаг 4: Запуск Code Interpreter (self-correction встроен в ci_runner)
-    from agent.runtime.runner_factory import create_analysis_runner
-
     errors = []
     limitations = list(plan.limitations)
     charts = []
+    normalized_max_retries = _normalize_execution_retries(max_retries)
 
-    runner = create_analysis_runner()
+    runner = _create_runner()
     try:
         ci_result = runner.run_analysis(
             prompt=prompt,
             file_paths=file_paths,
-            max_retries=2,  # self-correction через previous_response_id
+            max_retries=normalized_max_retries,  # self-correction через previous_response_id
         )
     except Exception as e:
         print(f"  [Executor] ❌ CI ошибка: {e}")
@@ -795,18 +808,23 @@ def _execute_legacy(plan: AnalysisPlan, max_retries: int = 2) -> ExecutionResult
                 "Исправь: верни findings с конкретными товарами (entity_id, reasons, metrics). "
                 "Не возвращай пустой findings."
             )
+            remaining_attempts = max(3 - int(ci_result.get("attempts", 0) or 0), 0)
             # Дополнительный retry через предыдущий run
             try:
-                runner2 = create_analysis_runner()
-                ci_result2 = runner2.run_analysis(
-                    prompt=prompt + f"\n\n## ⚠️ ВАЛИДАЦИЯ ПРЕДЫДУЩЕЙ ПОПЫТКИ:\n{correction}",
+                ci_result2 = runner.run_analysis(
+                    prompt=prompt
+                    + "\n\n## Validation repair\n"
+                    + "The previous execution returned an invalid analytical payload.\n"
+                    + "Return a corrected result that satisfies the JSON contract.\n"
+                    + f"{correction}",
                     file_paths=file_paths,
-                    max_retries=1,
+                    max_retries=max(remaining_attempts - 1, 0),
                 )
                 if ci_result2.get("text"):
                     findings2, hyps2, status2, answer2, lims2 = _parse_ci_result(ci_result2, plan)
                     if findings2:
                         print(f"  [Executor] ✅ Retry дал {len(findings2)} findings")
+                        ci_result = ci_result2
                         findings = findings2
                         hypothesis_results = hyps2
                         answer_status = status2
@@ -820,6 +838,8 @@ def _execute_legacy(plan: AnalysisPlan, max_retries: int = 2) -> ExecutionResult
         print(f"  [Executor] ✅ Валидация пройдена")
     if extra_lim:
         limitations.extend(extra_lim)
+    if _runtime_failed(ci_result):
+        answer_status = "partial" if findings or answer else "not_enough_data"
 
     print(f"  [Executor] ✅ Findings: {len(findings)}")
     print(f"  [Executor] ✅ Гипотез: {len(hypothesis_results)}")
@@ -923,14 +943,12 @@ def _execute_exemplar(plan: AnalysisPlan, max_retries: int = 2) -> ExecutionResu
     errors: list[str] = []
 
     print("\n  [Executor] Шаг 2: Запуск Code Interpreter...")
-    from agent.runtime.runner_factory import create_analysis_runner
-
-    runner = create_analysis_runner()
+    runner = _create_runner()
     try:
         ci_result = runner.run_analysis(
             prompt=prompt,
             file_paths=file_paths,
-            max_retries=max_retries,
+            max_retries=_normalize_execution_retries(max_retries),
         )
     except Exception as e:
         errors.append(f"CI error: {e}")
@@ -954,6 +972,8 @@ def _execute_exemplar(plan: AnalysisPlan, max_retries: int = 2) -> ExecutionResu
             answer_status = "partial"
     else:
         print("  [Executor] ✅ Validators passed")
+    if _runtime_failed(ci_result):
+        answer_status = "partial" if findings or answer else "not_enough_data"
 
     if not balances_ok and "stocks" in dataset_ids:
         limitations.append("1С балансы недоступны (VPN) — гипотезы по остаткам не проверены")
@@ -1104,11 +1124,9 @@ def _execute_attached(
     attached_input: AttachedExecutionInput,
     max_retries: int = 2,
 ) -> ExecutionResult:
-    from agent.runtime.runner_factory import create_analysis_runner
-
     _validate_attached_execution_input(plan, attached_input)
     prompt = _build_attached_prompt(plan, attached_input.manifest)
-    runner = create_analysis_runner()
+    runner = _create_runner()
     errors: list[str] = []
     limitations = list(plan.limitations)
     execution_metadata = _build_execution_metadata(
@@ -1118,7 +1136,7 @@ def _execute_attached(
     ci_result = runner.run_analysis(
         prompt=prompt,
         file_paths=[item.local_path for item in attached_input.files],
-        max_retries=max_retries,
+        max_retries=_normalize_execution_retries(max_retries),
     )
     if ci_result.get("error"):
         errors.append(ci_result["error"])
@@ -1135,6 +1153,8 @@ def _execute_attached(
         limitations.append("Validation issues: " + "; ".join(validation_errors))
         if answer_status == "answered":
             answer_status = "partial"
+    if _runtime_failed(ci_result):
+        answer_status = "partial" if findings or answer else "not_enough_data"
 
     try:
         from agent.reporter import synthesize as reporter_synthesize
@@ -1195,7 +1215,7 @@ def execute(
         return _execute_attached(
             plan,
             attached_input=attached_input,
-            max_retries=max_retries,
+            max_retries=_normalize_execution_retries(max_retries),
         )
     return _execute_legacy(plan, max_retries=max_retries)
 

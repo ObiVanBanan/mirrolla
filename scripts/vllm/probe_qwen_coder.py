@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import json
 import os
-import statistics
 import time
 from pathlib import Path
+from urllib import error, request
 
-import requests
+from agent.runtime.code_parser import GeneratedCodeError, extract_python_code
 
 
 DEFAULT_BASE_URL = os.getenv("LOCAL_LLM_BASE_URL", "http://127.0.0.1:8010/v1")
@@ -22,126 +22,105 @@ def _headers() -> dict[str, str]:
     }
 
 
-def _request(method: str, url: str, *, json_body: dict | None = None) -> tuple[bool, float, str]:
+def _request_json(method: str, url: str, *, payload: dict | None = None) -> tuple[bool, float, dict | str]:
     started = time.perf_counter()
+    body = None if payload is None else json.dumps(payload).encode("utf-8")
+    req = request.Request(url, data=body, headers=_headers(), method=method)
     try:
-        response = requests.request(
-            method,
-            url,
-            headers=_headers(),
-            json=json_body,
-            timeout=90,
-        )
+        with request.urlopen(req, timeout=90) as response:
+            latency_ms = (time.perf_counter() - started) * 1000
+            text = response.read().decode("utf-8")
+            return True, latency_ms, json.loads(text)
+    except error.HTTPError as exc:
         latency_ms = (time.perf_counter() - started) * 1000
-        if response.ok:
-            return True, latency_ms, response.text
-        return False, latency_ms, f"HTTP {response.status_code}: {response.text[:500]}"
+        detail = exc.read().decode("utf-8", errors="replace")
+        return False, latency_ms, f"HTTP {exc.code}: {detail[:500]}"
+    except json.JSONDecodeError as exc:
+        latency_ms = (time.perf_counter() - started) * 1000
+        return False, latency_ms, f"Invalid JSON response: {exc}"
     except Exception as exc:
         latency_ms = (time.perf_counter() - started) * 1000
         return False, latency_ms, str(exc)
 
 
-def _chat_payload(prompt: str, *, response_format: dict | None = None) -> dict:
-    payload = {
-        "model": DEFAULT_MODEL,
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0,
-    }
-    if response_format is not None:
-        payload["response_format"] = response_format
-    return payload
+def _extract_message_content(payload: dict) -> str:
+    try:
+        return payload["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise ValueError("chat/completions response does not contain choices[0].message.content") from exc
 
 
 def main() -> int:
     errors: list[str] = []
-    latencies: list[float] = []
-
-    models_ok, latency, models_text = _request("GET", f"{DEFAULT_BASE_URL}/models")
-    latencies.append(latency)
-    if not models_ok:
-        errors.append(f"/models failed: {models_text}")
-
-    chat_ok, latency, chat_text = _request(
-        "POST",
-        f"{DEFAULT_BASE_URL}/chat/completions",
-        json_body=_chat_payload("Return only the word ready."),
-    )
-    latencies.append(latency)
-    if not chat_ok:
-        errors.append(f"chat completion failed: {chat_text}")
-
-    ru_ok, latency, ru_text = _request(
-        "POST",
-        f"{DEFAULT_BASE_URL}/chat/completions",
-        json_body=_chat_payload("Ответь по-русски одним словом: готово."),
-    )
-    latencies.append(latency)
-    if not ru_ok:
-        errors.append(f"russian completion failed: {ru_text}")
-
-    code_ok, latency, code_text = _request(
-        "POST",
-        f"{DEFAULT_BASE_URL}/chat/completions",
-        json_body=_chat_payload("Write a tiny Python function that adds two numbers."),
-    )
-    latencies.append(latency)
-    if not code_ok:
-        errors.append(f"python code generation failed: {code_text}")
-
-    json_ok, latency, json_text = _request(
-        "POST",
-        f"{DEFAULT_BASE_URL}/chat/completions",
-        json_body=_chat_payload(
-            "Return a JSON object with keys status and answer.",
-            response_format={"type": "json_object"},
-        ),
-    )
-    latencies.append(latency)
-    if not json_ok:
-        errors.append(f"json_object failed: {json_text}")
-
-    schema_ok, latency, schema_text = _request(
-        "POST",
-        f"{DEFAULT_BASE_URL}/chat/completions",
-        json_body=_chat_payload(
-            "Return a JSON object with status and answer.",
-            response_format={
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "probe_schema",
-                    "schema": {
-                        "type": "object",
-                        "properties": {
-                            "status": {"type": "string"},
-                            "answer": {"type": "string"},
-                        },
-                        "required": ["status", "answer"],
-                        "additionalProperties": False,
-                    },
-                },
-            },
-        ),
-    )
-    latencies.append(latency)
-    if not schema_ok:
-        errors.append(f"json_schema failed: {schema_text}")
-
-    payload = {
-        "server_reachable": models_ok,
-        "model": DEFAULT_MODEL,
-        "chat_completion": chat_ok,
-        "russian_completion": ru_ok,
-        "python_code_generation": code_ok,
-        "json_object": json_ok,
-        "json_schema": schema_ok,
-        "average_latency_ms": round(statistics.mean(latencies), 2) if latencies else 0,
+    probe = {
+        "base_url": DEFAULT_BASE_URL,
+        "expected_model": DEFAULT_MODEL,
+        "models_ok": False,
+        "model_present": False,
+        "chat_ok": False,
+        "python_block_ok": False,
+        "latency_ms": {},
         "errors": errors,
     }
 
+    models_ok, latency_ms, models_payload = _request_json("GET", f"{DEFAULT_BASE_URL}/models")
+    probe["latency_ms"]["models"] = round(latency_ms, 2)
+    probe["models_ok"] = models_ok
+    if not models_ok:
+        errors.append(f"/models failed: {models_payload}")
+    else:
+        model_ids = [
+            item.get("id")
+            for item in models_payload.get("data", [])
+            if isinstance(item, dict)
+        ]
+        probe["available_models"] = model_ids
+        probe["model_present"] = DEFAULT_MODEL in model_ids
+        if not probe["model_present"]:
+            errors.append(f"model '{DEFAULT_MODEL}' not found in /models")
+
+    chat_ok, latency_ms, chat_payload = _request_json(
+        "POST",
+        f"{DEFAULT_BASE_URL}/chat/completions",
+        payload={
+            "model": DEFAULT_MODEL,
+            "temperature": 0,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": (
+                        "Return only one Python code block with a function add(a, b) "
+                        "that returns a + b."
+                    ),
+                }
+            ],
+        },
+    )
+    probe["latency_ms"]["chat_completions"] = round(latency_ms, 2)
+    probe["chat_ok"] = chat_ok
+    if not chat_ok:
+        errors.append(f"/chat/completions failed: {chat_payload}")
+    else:
+        try:
+            content = _extract_message_content(chat_payload)
+            probe["raw_content_preview"] = content[:200]
+            extracted_code = extract_python_code(content)
+            probe["python_block_ok"] = True
+            probe["extracted_code_preview"] = extracted_code[:200]
+        except (ValueError, GeneratedCodeError) as exc:
+            errors.append(f"code extraction failed: {exc}")
+
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    OUTPUT_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(json.dumps(payload, ensure_ascii=False, indent=2))
-    return 0 if models_ok and chat_ok else 1
+    OUTPUT_PATH.write_text(json.dumps(probe, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(json.dumps(probe, ensure_ascii=False, indent=2))
+
+    mandatory_checks = (
+        probe["models_ok"],
+        probe["model_present"],
+        probe["chat_ok"],
+        probe["python_block_ok"],
+    )
+    return 0 if all(mandatory_checks) else 1
 
 
 if __name__ == "__main__":

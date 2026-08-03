@@ -33,6 +33,8 @@ Reporter (gpt-4o) → человекочитаемый ответ менедже
 
 ## Локальный runtime (WSL)
 
+`local_qwen` поддерживается как основной локальный режим: `vLLM` и API запускаются в WSL/host, а Python-код модели исполняется только в отдельном Docker sandbox через локальный Docker daemon.
+
 ```bash
 # 1. Собрать sandbox image
 bash scripts/build-analysis-sandbox.sh
@@ -48,7 +50,7 @@ export EXECUTION_BACKEND=local_qwen
 uvicorn api.main:app --host 127.0.0.1 --port 8000
 ```
 
-Compose-режим пока не является основным способом запуска `local_qwen`: для MVP предполагается, что `vLLM` и API работают напрямую в WSL/host, где доступен Docker daemon. В `docker compose` безопасный mount Docker socket не добавлялся.
+`docker compose` сейчас не является поддержанным способом запуска `local_qwen` без отдельного execution-сервиса: безопасный mount Docker socket в основной контейнер не добавлялся. Для compose-режима используйте `EXECUTION_BACKEND=openai_ci`, либо выносите sandbox execution в отдельный сервис с собственным API.
 
 ## Безопасность local_qwen
 
@@ -62,10 +64,13 @@ Compose-режим пока не является основным способ�
 
 ## Быстрый старт (Docker)
 
+Этот сценарий предназначен для `openai_ci`. Для `local_qwen` используйте WSL-режим выше.
+
 ```bash
 # 1. Скопировать и заполнить .env
 cp .env.example .env
 # Вписать OPENAI_API_KEY
+export EXECUTION_BACKEND=openai_ci
 
 # 2. Запустить
 docker compose up --build
@@ -77,7 +82,7 @@ docker compose up --build
 
 ## Быстрый старт (без Docker, локально)
 
-**Требования:** Python 3.12+. Для `local_qwen` также нужны WSL2, запущенный vLLM и Docker daemon. Для `openai_ci` нужен доступ к OpenAI API.
+**Требования:** Python 3.12+. Для `local_qwen` нужны WSL2, запущенный vLLM и Docker daemon. Для `openai_ci` нужен доступ к OpenAI API.
 
 ```bash
 # 1. Виртуальное окружение
@@ -91,7 +96,7 @@ pip install -r requirements.txt
 cp .env.example .env
 # Выбрать backend:
 # - local_qwen: локальный Qwen + Docker sandbox
-# - openai_ci: OpenAI Code Interpreter
+# - openai_ci: OpenAI Code Interpreter rollback backend
 
 # 4. Данные
 # Положить xlsx-файлы в data/:
@@ -203,14 +208,22 @@ mirrolla/
 
 | Переменная | Назначение | Дефолт |
 |------------|------------|--------|
-| `token` | OpenAI API key | (обязательно) |
+| `token` | OpenAI API key для router/planner/reporter и для `openai_ci` executor | обязателен для `openai_ci`, опционален для полностью локального execution |
 | `EXECUTION_BACKEND` | `local_qwen` или `openai_ci` | `local_qwen` |
 | `LOCAL_LLM_BASE_URL` | OpenAI-compatible vLLM endpoint | `http://127.0.0.1:8010/v1` |
 | `LOCAL_LLM_API_KEY` | API key локального vLLM | `mirrolla-local` |
 | `LOCAL_LLM_MODEL` | Served model name в vLLM | `qwen-coder-local` |
 | `LOCAL_LLM_TIMEOUT_SECONDS` | Timeout запроса к локальной модели | `180` |
 | `LOCAL_LLM_MAX_TOKENS` | Верхняя граница генерации кода | `2500` |
+| `LOCAL_LLM_MAX_PROMPT_CHARS` | Лимит prompt перед compact/reject | `22000` |
 | `LOCAL_LLM_TEMPERATURE` | Температура для генерации кода | `0.1` |
+| `LOCAL_SANDBOX_IMAGE` | Docker image для sandbox execution | `mirrolla-analysis-sandbox:latest` |
+| `LOCAL_SANDBOX_TIMEOUT_SECONDS` | Timeout sandbox execution | `180` |
+| `LOCAL_SANDBOX_MEMORY` | Лимит памяти контейнера | `2g` |
+| `LOCAL_SANDBOX_CPUS` | Лимит CPU контейнера | `1.0` |
+| `LOCAL_SANDBOX_PIDS_LIMIT` | Лимит процессов в контейнере | `256` |
+| `LOCAL_SANDBOX_ROOT` | Корень runtime-артефактов sandbox | `.runtime/local-executor` |
+| `LOCAL_SANDBOX_KEEP_RUNS` | Не удалять runtime-папки после запуска | `0` |
 | `MIRROLLA_API` | URL API для авто-отчёта | `http://127.0.0.1:8000/api/v1` |
 | `ROUTER_MODEL` | Модель для router | `gpt-4o-mini` |
 | `PLANNER_MODEL` | Модель для planner | `gpt-4o` |

@@ -1,32 +1,85 @@
 from __future__ import annotations
 
 import json
-import os
+import shutil
 import time
 import uuid
+from pathlib import Path
 
-from agent.runtime.code_parser import GeneratedCodeError, extract_python_code
+from agent.runtime.code_parser import extract_python_code
 from agent.runtime.docker_sandbox import DockerSandbox, SandboxExecutionResult
 from agent.runtime.local_llm import LocalLLMClient
 
 
+MAX_REPAIR_CODE_CHARS = 12000
+MAX_DIAGNOSTICS_CHARS = 8000
+CHARTS_ROOT = Path("data/charts")
 SYSTEM_PROMPT = """You are Mirrolla local analytical code generator.
 
-Return only Python code.
-Do not return markdown explanations unless the response is a Python code block.
+Return exactly one complete Python script.
 The script must:
 - read input files only from /mnt/data;
-- inspect the available files and their headers before computing metrics;
-- prefer pandas or csv.DictReader and reference columns by header names, not positional indexes;
+- inspect available files and headers before computing metrics;
 - write the final JSON result to /mnt/output/result.json;
-- optionally save PNG charts to /mnt/output;
+- print the same final JSON to stdout;
+- save PNG charts only to /mnt/output;
+- use ensure_ascii=False and default=str when serializing JSON;
+- avoid NaN and Infinity in JSON output;
 - never use network access;
-- never use subprocess, shell commands, pip, eval, or exec.
-- result.json must be a JSON object with:
-  - answer_status: one of answered, partial, not_enough_data
-  - answer: a short human-readable string
-  - findings: a list, use [] when there are no itemized findings
+- never use shell commands, subprocess, pip, eval, or exec.
 """
+
+
+def compact_execution_prompt(prompt: str, max_chars: int) -> str:
+    if max_chars < 4000:
+        raise ValueError("max_chars must be at least 4000")
+    if len(prompt) <= max_chars:
+        return prompt
+
+    headings = [
+        "## Question",
+        "## Attached execution manifest",
+        "## Attached datasets for this analysis",
+        "## Hypotheses to validate",
+        "## Critical rules",
+        "## Output format",
+    ]
+    sections = _split_sections(prompt)
+    kept: list[str] = []
+    optional: list[str] = []
+    for section in sections:
+        if any(section.startswith(heading) for heading in headings):
+            kept.append(section)
+        elif section.startswith("## Reference helpers"):
+            continue
+        else:
+            optional.append(section)
+
+    compacted = "\n\n".join([*kept, *optional]).strip()
+    if len(compacted) <= max_chars:
+        return compacted
+
+    while optional and len(compacted) > max_chars:
+        optional.pop()
+        compacted = "\n\n".join([*kept, *optional]).strip()
+
+    if len(compacted) > max_chars:
+        raise ValueError("Prompt is too large even after compaction")
+    return compacted
+
+
+def _split_sections(prompt: str) -> list[str]:
+    chunks: list[str] = []
+    current: list[str] = []
+    for line in prompt.splitlines():
+        if line.startswith("## ") and current:
+            chunks.append("\n".join(current).strip())
+            current = [line]
+        else:
+            current.append(line)
+    if current:
+        chunks.append("\n".join(current).strip())
+    return [chunk for chunk in chunks if chunk]
 
 
 class LocalQwenRunner:
@@ -45,22 +98,32 @@ class LocalQwenRunner:
         file_paths: list[str],
         max_retries: int = 2,
     ) -> dict:
+        if not file_paths:
+            return self._failed_result("No input files were provided", None, 0)
+        for file_path in file_paths:
+            if not Path(file_path).exists():
+                return self._failed_result(f"Input file does not exist: {file_path}", None, 0)
+
+        attempts_limit = 1 + min(max(max_retries, 0), 2)
         run_id = uuid.uuid4().hex[:8]
-        file_names = [os.path.basename(path) for path in file_paths]
-        attempts = 0
-        last_error = ""
-        last_code: str | None = None
         previous_code: str | None = None
+        last_code: str | None = None
+        last_error = ""
 
-        self.llm_client.healthcheck()
+        try:
+            self.llm_client.healthcheck()
+        except Exception as exc:
+            return self._failed_result(f"Local LLM healthcheck failed: {exc}", None, 0)
 
-        for attempt in range(1, max_retries + 2):
-            attempts = attempt
+        sandbox_names = self.sandbox.plan_input_filenames(file_paths)
+        prompt = compact_execution_prompt(prompt, self.llm_client.config.max_prompt_chars)
+
+        for attempt in range(1, attempts_limit + 1):
             llm_started = time.perf_counter()
             try:
                 user_prompt = self._build_user_prompt(
                     prompt=prompt,
-                    file_names=file_names,
+                    sandbox_names=sandbox_names,
                     previous_code=previous_code,
                     previous_error=last_error,
                 )
@@ -75,81 +138,104 @@ class LocalQwenRunner:
                 continue
 
             sandbox_started = time.perf_counter()
-            sandbox_result = self.sandbox.execute(code, file_paths, run_id=run_id)
+            sandbox_result = self.sandbox.execute(code, file_paths, run_id=run_id, attempt=attempt)
             sandbox_ms = int((time.perf_counter() - sandbox_started) * 1000)
             print(f"[LocalQwenRunner] run={run_id} attempt={attempt} llm_ms={llm_ms} sandbox_ms={sandbox_ms}")
 
-            if sandbox_result.status == "completed" and isinstance(sandbox_result.result, dict):
-                validation_error = self._validate_result_payload(sandbox_result.result)
-                if validation_error:
-                    last_error = validation_error
-                    previous_code = code
-                    continue
-                result_text = json.dumps(sandbox_result.result, ensure_ascii=False)
-                print(
-                    f"[LocalQwenRunner] result_json=true findings={len(sandbox_result.result.get('findings', []))} charts={len(sandbox_result.charts)}"
-                )
-                return {
-                    "status": "completed",
-                    "text": result_text,
-                    "charts": sandbox_result.charts,
-                    "error": "",
-                    "code": code,
-                    "attempts": attempt,
-                }
+            try:
+                if sandbox_result.status == "completed" and isinstance(sandbox_result.result, dict):
+                    validation_error = self._validate_result_payload(sandbox_result.result)
+                    if validation_error:
+                        last_error = validation_error
+                        previous_code = code
+                        continue
+                    chart_paths = self._persist_charts(run_id, sandbox_result.charts)
+                    result_text = json.dumps(sandbox_result.result, ensure_ascii=False)
+                    print(
+                        f"[LocalQwenRunner] result_json=true findings={len(sandbox_result.result.get('findings', []))} charts={len(chart_paths)}"
+                    )
+                    return {
+                        "status": "completed",
+                        "text": result_text,
+                        "charts": chart_paths,
+                        "error": "",
+                        "code": code,
+                        "attempts": attempt,
+                    }
 
-            last_error = self._build_sandbox_error(sandbox_result)
-            previous_code = code
+                last_error = self._build_sandbox_error(sandbox_result)
+                previous_code = code
+            finally:
+                self.sandbox.cleanup_run(sandbox_result.runtime_dir)
 
-        return {
-            "status": "failed",
-            "text": "",
-            "charts": [],
-            "error": last_error or "Local Qwen execution failed",
-            "code": last_code,
-            "attempts": attempts,
-        }
+        return self._failed_result(
+            f"Local Qwen execution failed after {attempts_limit} attempts: {last_error or 'unknown error'}",
+            last_code,
+            attempts_limit,
+        )
 
     def _build_user_prompt(
         self,
         *,
         prompt: str,
-        file_names: list[str],
+        sandbox_names: list[str],
         previous_code: str | None,
         previous_error: str,
     ) -> str:
-        file_block = "\n".join(f"- {name}" for name in file_names) or "- no attached files"
+        file_block = "\n".join(f"- /mnt/data/{name}" for name in sandbox_names)
         repair_block = ""
         if previous_error:
             repair_block = (
                 "\nPrevious attempt failed.\n"
-                f"Error:\n{previous_error}\n"
+                f"Diagnostics:\n{previous_error[-MAX_DIAGNOSTICS_CHARS:]}\n"
             )
             if previous_code:
-                repair_block += f"\nPrevious code:\n```python\n{previous_code}\n```\n"
-            repair_block += "Fix the problem and return a full replacement script.\n"
+                trimmed_code = previous_code[-MAX_REPAIR_CODE_CHARS:]
+                repair_block += f"\nPrevious code:\n```python\n{trimmed_code}\n```\n"
+            repair_block += "Return a full replacement Python script. Do not return a diff.\n"
 
         return (
-            f"Task:\n{prompt}\n\n"
-            f"Attached sandbox files:\n{file_block}\n\n"
-            "Output contract:\n"
-            "- Write /mnt/output/result.json.\n"
+            f"{prompt}\n\n"
+            "## Critical rules\n"
+            "- Use only the exact sandbox file paths listed below.\n"
+            "- Write /mnt/output/result.json and print the same JSON to stdout.\n"
             "- answer_status must be exactly one of: answered, partial, not_enough_data.\n"
-            "- answer must be a short string, never a number or object.\n"
-            "- findings must be a JSON list. Use [] when there are no detailed findings.\n"
-            "- Read tabular files by column names from the header row, not by column position.\n\n"
-            "Return one complete Python script that writes JSON to /mnt/output/result.json.\n"
+            "- answer must be a non-empty string.\n"
+            "- findings must be a JSON list.\n"
+            "- Do not change input file paths.\n\n"
+            "## Output format\n"
+            "- Return one complete Python script.\n\n"
+            f"## Sandbox files\n{file_block}\n"
             f"{repair_block}"
         )
 
     def _build_sandbox_error(self, sandbox_result: SandboxExecutionResult) -> str:
-        if sandbox_result.error:
-            return sandbox_result.error
+        parts: list[str] = []
+        if sandbox_result.exit_code is not None:
+            parts.append(f"exit_code={sandbox_result.exit_code}")
+        parts.append(f"timed_out={sandbox_result.timed_out}")
+        if sandbox_result.result_json_error:
+            parts.append(f"result_json_error={sandbox_result.result_json_error}")
         if sandbox_result.stderr:
-            return sandbox_result.stderr
+            parts.append(f"stderr={sandbox_result.stderr[-MAX_DIAGNOSTICS_CHARS:]}")
         if sandbox_result.stdout:
-            return sandbox_result.stdout
-        return "Sandbox execution failed without diagnostics"
+            parts.append(f"stdout={sandbox_result.stdout[-MAX_DIAGNOSTICS_CHARS:]}")
+        if sandbox_result.error:
+            parts.append(f"error={sandbox_result.error}")
+        return "\n".join(parts) or "Sandbox execution failed without diagnostics"
+
+    def _persist_charts(self, run_id: str, chart_paths: list[str]) -> list[str]:
+        if not chart_paths:
+            return []
+        destination_dir = CHARTS_ROOT / run_id
+        destination_dir.mkdir(parents=True, exist_ok=True)
+        copied: list[str] = []
+        for chart_path in chart_paths:
+            source = Path(chart_path)
+            destination = destination_dir / source.name
+            shutil.copy2(source, destination)
+            copied.append(str(destination.resolve()))
+        return copied
 
     def _validate_result_payload(self, payload: dict) -> str | None:
         allowed_statuses = {"answered", "partial", "not_enough_data"}
@@ -162,3 +248,13 @@ class LocalQwenRunner:
         if not isinstance(findings, list):
             return "result.json must contain findings as a list"
         return None
+
+    def _failed_result(self, error: str, code: str | None, attempts: int) -> dict:
+        return {
+            "status": "failed",
+            "text": "",
+            "charts": [],
+            "error": error,
+            "code": code,
+            "attempts": attempts,
+        }

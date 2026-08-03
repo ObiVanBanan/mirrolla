@@ -14,6 +14,7 @@ DEFAULT_MODEL = "qwen-coder-local"
 DEFAULT_TIMEOUT_SECONDS = 180.0
 DEFAULT_MAX_TOKENS = 2500
 DEFAULT_TEMPERATURE = 0.1
+DEFAULT_MAX_PROMPT_CHARS = 22000
 
 
 @dataclass(frozen=True)
@@ -24,6 +25,7 @@ class LocalLLMConfig:
     timeout_seconds: float
     max_tokens: int
     temperature: float
+    max_prompt_chars: int
 
 
 def _normalize_base_url(raw_url: str) -> str:
@@ -56,6 +58,7 @@ def load_local_llm_config() -> LocalLLMConfig:
     timeout_seconds = _load_float("LOCAL_LLM_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS)
     max_tokens = _load_int("LOCAL_LLM_MAX_TOKENS", DEFAULT_MAX_TOKENS)
     temperature = _load_float("LOCAL_LLM_TEMPERATURE", DEFAULT_TEMPERATURE)
+    max_prompt_chars = _load_int("LOCAL_LLM_MAX_PROMPT_CHARS", DEFAULT_MAX_PROMPT_CHARS)
 
     if not api_key:
         raise ValueError("LOCAL_LLM_API_KEY must not be empty")
@@ -67,6 +70,8 @@ def load_local_llm_config() -> LocalLLMConfig:
         raise ValueError("LOCAL_LLM_MAX_TOKENS must be at least 256")
     if not 0 <= temperature <= 1:
         raise ValueError("LOCAL_LLM_TEMPERATURE must be between 0 and 1")
+    if max_prompt_chars < 4000:
+        raise ValueError("LOCAL_LLM_MAX_PROMPT_CHARS must be at least 4000")
 
     return LocalLLMConfig(
         base_url=base_url,
@@ -75,6 +80,7 @@ def load_local_llm_config() -> LocalLLMConfig:
         timeout_seconds=timeout_seconds,
         max_tokens=max_tokens,
         temperature=temperature,
+        max_prompt_chars=max_prompt_chars,
     )
 
 
@@ -116,20 +122,21 @@ class LocalLLMClient:
 
 def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Inspect local LLM config.")
-    parser.add_argument(
-        "--format",
-        choices=("json",),
-        default="json",
-        help="Output format.",
-    )
+    parser.add_argument("--format", choices=("json",), default="json", help="Output format.")
     return parser
+
+
+def _redact_config(config: LocalLLMConfig) -> dict[str, object]:
+    payload = asdict(config)
+    payload["api_key"] = "***redacted***"
+    return payload
 
 
 def main() -> int:
     parser = _build_arg_parser()
     parser.parse_args()
     config = load_local_llm_config()
-    print(json.dumps(asdict(config), ensure_ascii=False, indent=2))
+    print(json.dumps(_redact_config(config), ensure_ascii=False, indent=2))
     return 0
 
 

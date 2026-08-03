@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
 
-from agent.runtime.local_llm import LocalLLMClient, load_local_llm_config
+from agent.runtime.local_llm import LocalLLMClient, load_local_llm_config, main
 
 
 class _FakeModels:
@@ -47,6 +48,7 @@ def _clear_local_llm_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "LOCAL_LLM_TIMEOUT_SECONDS",
         "LOCAL_LLM_MAX_TOKENS",
         "LOCAL_LLM_TEMPERATURE",
+        "LOCAL_LLM_MAX_PROMPT_CHARS",
     ):
         monkeypatch.delenv(env_name, raising=False)
 
@@ -57,6 +59,7 @@ def test_load_local_llm_config_uses_defaults() -> None:
     assert config.base_url == "http://127.0.0.1:8010/v1"
     assert config.api_key == "mirrolla-local"
     assert config.model == "qwen-coder-local"
+    assert config.max_prompt_chars == 22000
 
 
 def test_load_local_llm_config_normalizes_base_url(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -85,6 +88,15 @@ def test_load_local_llm_config_rejects_invalid_temperature(monkeypatch: pytest.M
     assert "LOCAL_LLM_TEMPERATURE" in str(exc_info.value)
 
 
+def test_load_local_llm_config_rejects_invalid_prompt_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LOCAL_LLM_MAX_PROMPT_CHARS", "100")
+
+    with pytest.raises(ValueError) as exc_info:
+        load_local_llm_config()
+
+    assert "LOCAL_LLM_MAX_PROMPT_CHARS" in str(exc_info.value)
+
+
 def test_healthcheck_calls_models_list() -> None:
     fake_client = _FakeClient()
     llm_client = LocalLLMClient(client=fake_client)
@@ -104,3 +116,14 @@ def test_generate_code_uses_chat_completions_with_configured_model() -> None:
     assert fake_client.chat_completions.calls[0]["model"] == "qwen-coder-local"
     assert not hasattr(fake_client, "files")
     assert not hasattr(fake_client, "responses")
+
+
+def test_main_redacts_api_key(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.setenv("LOCAL_LLM_API_KEY", "secret-key")
+    monkeypatch.setattr("sys.argv", ["local_llm.py"])
+
+    exit_code = main()
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    assert payload["api_key"] == "***redacted***"

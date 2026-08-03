@@ -64,6 +64,41 @@ def test_rejects_eval_call() -> None:
     assert "Forbidden call detected: eval" in str(exc_info.value)
 
 
+def test_rejects_os_alias_system_call() -> None:
+    with pytest.raises(GeneratedCodeError) as exc_info:
+        extract_python_code("```python\nimport os as x\nx.system('dir')\n```")
+
+    assert "Forbidden call detected: os.system" in str(exc_info.value)
+
+
+def test_rejects_from_import_system_call() -> None:
+    with pytest.raises(GeneratedCodeError) as exc_info:
+        extract_python_code("```python\nfrom os import system\nsystem('dir')\n```")
+
+    assert "Forbidden call detected: os.system" in str(exc_info.value)
+
+
+def test_rejects_httpx_import() -> None:
+    with pytest.raises(GeneratedCodeError) as exc_info:
+        extract_python_code("```python\nimport httpx\n```")
+
+    assert "Forbidden import detected: httpx" in str(exc_info.value)
+
+
+def test_rejects_shutil_rmtree() -> None:
+    with pytest.raises(GeneratedCodeError) as exc_info:
+        extract_python_code("```python\nimport shutil\nshutil.rmtree('x')\n```")
+
+    assert "Forbidden call detected: shutil.rmtree" in str(exc_info.value)
+
+
+def test_rejects_path_unlink() -> None:
+    with pytest.raises(GeneratedCodeError) as exc_info:
+        extract_python_code("```python\nfrom pathlib import Path\nPath('x').unlink()\n```")
+
+    assert "Forbidden call detected: unlink" in str(exc_info.value)
+
+
 def test_allows_common_data_stack() -> None:
     code = """
 ```python

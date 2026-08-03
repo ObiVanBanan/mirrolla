@@ -7,23 +7,42 @@ import re
 MAX_CODE_SIZE = 100_000
 FENCED_BLOCK_PATTERN = re.compile(r"```(?:python)?\s*\n(.*?)```", re.IGNORECASE | re.DOTALL)
 BANNED_IMPORT_ROOTS = {
+    "ctypes",
+    "ensurepip",
+    "ftplib",
+    "httpx",
+    "multiprocessing",
+    "paramiko",
+    "pexpect",
     "pip",
+    "resource",
     "requests",
     "socket",
     "subprocess",
     "urllib",
-    "urllib3",
 }
 BANNED_CALLS = {
+    "__import__",
+    "breakpoint",
     "compile",
     "eval",
     "exec",
+    "input",
     "os.system",
+    "os.popen",
     "subprocess.Popen",
     "subprocess.call",
     "subprocess.check_call",
     "subprocess.check_output",
     "subprocess.run",
+    "shutil.rmtree",
+}
+BANNED_CALL_PREFIXES = {
+    "os.spawn",
+}
+BANNED_METHODS = {
+    "unlink",
+    "rmdir",
 }
 
 
@@ -48,25 +67,47 @@ def _resolve_call_name(node: ast.AST) -> str | None:
         parent = _resolve_call_name(node.value)
         if parent:
             return f"{parent}.{node.attr}"
+        if isinstance(node.value, ast.Call):
+            constructor_name = _resolve_call_name(node.value.func)
+            if constructor_name:
+                return f"{constructor_name}.{node.attr}"
     return None
 
 
 def _validate_ast(tree: ast.AST) -> None:
+    import_aliases: dict[str, str] = {}
+
+    def resolve_alias(name: str | None) -> str | None:
+        if not name:
+            return None
+        parts = name.split(".")
+        mapped_root = import_aliases.get(parts[0], parts[0])
+        if len(parts) == 1:
+            return mapped_root
+        return ".".join([mapped_root, *parts[1:]])
+
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
                 root = alias.name.split(".", 1)[0]
+                import_aliases[alias.asname or root] = alias.name
                 if root in BANNED_IMPORT_ROOTS:
                     raise GeneratedCodeError(f"Forbidden import detected: {alias.name}")
         elif isinstance(node, ast.ImportFrom):
             module = node.module or ""
             root = module.split(".", 1)[0]
+            for alias in node.names:
+                import_aliases[alias.asname or alias.name] = f"{module}.{alias.name}".strip(".")
             if root in BANNED_IMPORT_ROOTS:
                 raise GeneratedCodeError(f"Forbidden import detected: {module}")
         elif isinstance(node, ast.Call):
-            call_name = _resolve_call_name(node.func)
+            call_name = resolve_alias(_resolve_call_name(node.func))
             if call_name in BANNED_CALLS:
                 raise GeneratedCodeError(f"Forbidden call detected: {call_name}")
+            if call_name and any(call_name.startswith(prefix) for prefix in BANNED_CALL_PREFIXES):
+                raise GeneratedCodeError(f"Forbidden call detected: {call_name}")
+            if isinstance(node.func, ast.Attribute) and node.func.attr in BANNED_METHODS:
+                raise GeneratedCodeError(f"Forbidden call detected: {node.func.attr}")
 
 
 def _parse_candidate(candidate: str) -> str:
