@@ -80,6 +80,7 @@ def test_execute_uses_restricted_docker_flags(monkeypatch, tmp_path: Path) -> No
     assert "--memory" in command and "4g" in command
     assert "--cpus" in command and "2" in command
     assert "--tmpfs" in command and "/tmp:rw,nosuid,nodev,size=512m" in command
+    assert "--user" in command and "10001:10001" in command
     assert kwargs["shell"] is False
     assert kwargs["timeout"] == 180
     assert kwargs["check"] is False
@@ -211,6 +212,17 @@ def test_execute_rejects_missing_result_json(monkeypatch, tmp_path: Path) -> Non
 
     assert result.status == "failed"
     assert result.error == "result.json is missing"
+
+
+def test_execute_rejects_input_directory(monkeypatch, tmp_path: Path) -> None:
+    input_dir = tmp_path / "input-dir"
+    input_dir.mkdir()
+    sandbox = DockerSandbox(config=_config(tmp_path))
+
+    result = sandbox.execute("print('ok')", [str(input_dir)], run_id="run-dir", attempt=1)
+
+    assert result.status == "failed"
+    assert "Input must be a regular file" in (result.error or "")
 
 
 def test_execute_rejects_result_json_symlink(monkeypatch, tmp_path: Path) -> None:
@@ -347,6 +359,42 @@ def test_execute_rejects_large_png(monkeypatch, tmp_path: Path) -> None:
 
     assert result.status == "failed"
     assert "size limit" in (result.error or "")
+
+
+def test_execute_preserves_verified_sandbox_filenames(monkeypatch, tmp_path: Path) -> None:
+    input_file = tmp_path / "sales.csv"
+    input_file.write_text("value\n1\n", encoding="utf-8")
+    captured = {}
+
+    def fake_run(command, **kwargs):
+        input_mount = next(
+            command[index + 1]
+            for index, item in enumerate(command)
+            if item == "-v" and command[index + 1].endswith(":/mnt/data:ro")
+        )
+        input_dir = Path(input_mount.rsplit(":", 2)[0])
+        captured["files"] = sorted(path.name for path in input_dir.iterdir())
+        output_mount = next(
+            command[index + 1]
+            for index, item in enumerate(command)
+            if item == "-v" and command[index + 1].endswith(":/mnt/output:rw")
+        )
+        output_dir = Path(output_mount.rsplit(":", 2)[0])
+        (output_dir / "result.json").write_text(json.dumps({"answer": 1}), encoding="utf-8")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    sandbox = DockerSandbox(config=_config(tmp_path))
+
+    sandbox.execute(
+        "print('ok')",
+        [str(input_file)],
+        run_id="run-safe-name",
+        attempt=1,
+        sandbox_filenames=["dataset_001.csv"],
+    )
+
+    assert captured["files"] == ["dataset_001.csv"]
 
 
 def test_execute_truncates_stdout_and_stderr_and_writes_attempt_files(monkeypatch, tmp_path: Path) -> None:

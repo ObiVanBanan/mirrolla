@@ -57,11 +57,41 @@ def test_rejects_requests_import() -> None:
     assert "Forbidden import detected: requests" in str(exc_info.value)
 
 
+@pytest.mark.parametrize(
+    ("module_name", "statement"),
+    [
+        ("socket", "import socket"),
+        ("urllib", "import urllib.request"),
+        ("ftplib", "import ftplib"),
+        ("paramiko", "import paramiko"),
+        ("pexpect", "import pexpect"),
+        ("multiprocessing", "import multiprocessing"),
+        ("ctypes", "import ctypes"),
+        ("resource", "import resource"),
+        ("pip", "import pip"),
+        ("ensurepip", "import ensurepip"),
+    ],
+)
+def test_rejects_other_forbidden_imports(module_name: str, statement: str) -> None:
+    with pytest.raises(GeneratedCodeError) as exc_info:
+        extract_python_code(f"```python\n{statement}\n```")
+
+    assert f"Forbidden import detected: {module_name}" in str(exc_info.value)
+
+
 def test_rejects_eval_call() -> None:
     with pytest.raises(GeneratedCodeError) as exc_info:
         extract_python_code("```python\neval('1 + 1')\n```")
 
     assert "Forbidden call detected: eval" in str(exc_info.value)
+
+
+@pytest.mark.parametrize("call_name", ["exec", "compile", "__import__", "breakpoint", "input"])
+def test_rejects_other_forbidden_builtin_calls(call_name: str) -> None:
+    with pytest.raises(GeneratedCodeError) as exc_info:
+        extract_python_code(f"```python\n{call_name}('x')\n```")
+
+    assert f"Forbidden call detected: {call_name}" in str(exc_info.value)
 
 
 def test_rejects_os_alias_system_call() -> None:
@@ -76,6 +106,20 @@ def test_rejects_from_import_system_call() -> None:
         extract_python_code("```python\nfrom os import system\nsystem('dir')\n```")
 
     assert "Forbidden call detected: os.system" in str(exc_info.value)
+
+
+def test_rejects_os_popen_alias_call() -> None:
+    with pytest.raises(GeneratedCodeError) as exc_info:
+        extract_python_code("```python\nimport os as x\nx.popen('dir')\n```")
+
+    assert "Forbidden call detected: os.popen" in str(exc_info.value)
+
+
+def test_rejects_os_spawn_from_import_call() -> None:
+    with pytest.raises(GeneratedCodeError) as exc_info:
+        extract_python_code("```python\nfrom os import spawnv\nspawnv(0, 'cmd', ['cmd'])\n```")
+
+    assert "Forbidden call detected: os.spawnv" in str(exc_info.value)
 
 
 def test_rejects_httpx_import() -> None:
@@ -96,7 +140,14 @@ def test_rejects_path_unlink() -> None:
     with pytest.raises(GeneratedCodeError) as exc_info:
         extract_python_code("```python\nfrom pathlib import Path\nPath('x').unlink()\n```")
 
-    assert "Forbidden call detected: unlink" in str(exc_info.value)
+    assert "Forbidden call detected: pathlib.Path.unlink" in str(exc_info.value)
+
+
+def test_rejects_path_rmdir_via_alias() -> None:
+    with pytest.raises(GeneratedCodeError) as exc_info:
+        extract_python_code("```python\nfrom pathlib import Path as P\nP('x').rmdir()\n```")
+
+    assert "Forbidden call detected: pathlib.Path.rmdir" in str(exc_info.value)
 
 
 def test_allows_common_data_stack() -> None:

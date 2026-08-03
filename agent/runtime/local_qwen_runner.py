@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import time
 import uuid
@@ -13,6 +14,7 @@ from agent.runtime.local_llm import LocalLLMClient
 
 MAX_REPAIR_CODE_CHARS = 12000
 MAX_DIAGNOSTICS_CHARS = 8000
+MAX_STDOUT_LINES = 40
 CHARTS_ROOT = Path("data/charts")
 SYSTEM_PROMPT = """You are Mirrolla local analytical code generator.
 
@@ -26,7 +28,9 @@ The script must:
 - use ensure_ascii=False and default=str when serializing JSON;
 - avoid NaN and Infinity in JSON output;
 - never use network access;
-- never use shell commands, subprocess, pip, eval, or exec.
+- never use shell commands, subprocess, pip, eval, or exec;
+- return a complete replacement script on every retry;
+- never change the listed /mnt/data file paths.
 """
 
 
@@ -36,23 +40,42 @@ def compact_execution_prompt(prompt: str, max_chars: int) -> str:
     if len(prompt) <= max_chars:
         return prompt
 
-    headings = [
+    required_headings = {
         "## Question",
+        "## User question",
         "## Attached execution manifest",
         "## Attached datasets for this analysis",
+        "## Dataset profiles",
         "## Hypotheses to validate",
         "## Critical rules",
         "## Output format",
-    ]
+    }
     sections = _split_sections(prompt)
     kept: list[str] = []
     optional: list[str] = []
+    optional_headings_to_drop = {
+        "## Reference helpers",
+        "## Reference code",
+        "## Long examples",
+        "## Example",
+        "## Examples",
+        "## Schema description",
+        "## Schema descriptions",
+    }
+    seen_optional_sections: set[str] = set()
     for section in sections:
-        if any(section.startswith(heading) for heading in headings):
+        header = section.splitlines()[0].strip()
+        body = "\n".join(section.splitlines()[1:]).strip()
+        normalized_body = re.sub(r"\s+", " ", body)
+        if header in required_headings:
             kept.append(section)
-        elif section.startswith("## Reference helpers"):
+        elif header in optional_headings_to_drop:
+            continue
+        elif normalized_body and normalized_body in seen_optional_sections:
             continue
         else:
+            if normalized_body:
+                seen_optional_sections.add(normalized_body)
             optional.append(section)
 
     compacted = "\n\n".join([*kept, *optional]).strip()
@@ -116,7 +139,10 @@ class LocalQwenRunner:
             return self._failed_result(f"Local LLM healthcheck failed: {exc}", None, 0)
 
         sandbox_names = self.sandbox.plan_input_filenames(file_paths)
-        prompt = compact_execution_prompt(prompt, self.llm_client.config.max_prompt_chars)
+        try:
+            prompt = compact_execution_prompt(prompt, self.llm_client.config.max_prompt_chars)
+        except ValueError as exc:
+            return self._failed_result(str(exc), None, 0)
 
         for attempt in range(1, attempts_limit + 1):
             llm_started = time.perf_counter()
@@ -146,7 +172,7 @@ class LocalQwenRunner:
                 if sandbox_result.status == "completed" and isinstance(sandbox_result.result, dict):
                     validation_error = self._validate_result_payload(sandbox_result.result)
                     if validation_error:
-                        last_error = validation_error
+                        last_error = self._format_validation_error(validation_error)
                         previous_code = code
                         continue
                     chart_paths = self._persist_charts(run_id, sandbox_result.charts)
@@ -190,7 +216,7 @@ class LocalQwenRunner:
                 f"Diagnostics:\n{previous_error[-MAX_DIAGNOSTICS_CHARS:]}\n"
             )
             if previous_code:
-                trimmed_code = previous_code[-MAX_REPAIR_CODE_CHARS:]
+                trimmed_code = previous_code[:MAX_REPAIR_CODE_CHARS]
                 repair_block += f"\nPrevious code:\n```python\n{trimmed_code}\n```\n"
             repair_block += "Return a full replacement Python script. Do not return a diff.\n"
 
@@ -199,9 +225,13 @@ class LocalQwenRunner:
             "## Critical rules\n"
             "- Use only the exact sandbox file paths listed below.\n"
             "- Write /mnt/output/result.json and print the same JSON to stdout.\n"
+            "- Write PNG files only to /mnt/output.\n"
             "- answer_status must be exactly one of: answered, partial, not_enough_data.\n"
             "- answer must be a non-empty string.\n"
             "- findings must be a JSON list.\n"
+            "- Use ensure_ascii=False and default=str when serializing JSON.\n"
+            "- Do not emit NaN or Infinity.\n"
+            "- No network, shell, subprocess, or pip.\n"
             "- Do not change input file paths.\n\n"
             "## Output format\n"
             "- Return one complete Python script.\n\n"
@@ -219,10 +249,18 @@ class LocalQwenRunner:
         if sandbox_result.stderr:
             parts.append(f"stderr={sandbox_result.stderr[-MAX_DIAGNOSTICS_CHARS:]}")
         if sandbox_result.stdout:
-            parts.append(f"stdout={sandbox_result.stdout[-MAX_DIAGNOSTICS_CHARS:]}")
+            stdout_tail = "\n".join(sandbox_result.stdout.splitlines()[-MAX_STDOUT_LINES:])
+            parts.append(f"stdout={stdout_tail[-MAX_DIAGNOSTICS_CHARS:]}")
         if sandbox_result.error:
             parts.append(f"error={sandbox_result.error}")
         return "\n".join(parts) or "Sandbox execution failed without diagnostics"
+
+    def _format_validation_error(self, validation_error: str) -> str:
+        return (
+            "Previous result did not pass validation.\n"
+            "Validator errors:\n"
+            f"{validation_error}"
+        )
 
     def _persist_charts(self, run_id: str, chart_paths: list[str]) -> list[str]:
         if not chart_paths:

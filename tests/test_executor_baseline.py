@@ -235,6 +235,81 @@ class ExecutorBaselineTests(unittest.TestCase):
         execute(self._plan())
         legacy_execute.assert_called_once()
 
+    @patch("agent.reporter.synthesize", return_value="summary")
+    @patch("agent.executor.validate_analysis_result", side_effect=[["missing findings"], []])
+    @patch("agent.executor._parse_ci_result")
+    @patch("agent.runtime.runner_factory.create_analysis_runner")
+    def test_attached_validation_retry_uses_same_runner_and_retry_budget(
+        self,
+        create_analysis_runner,
+        parse_ci_result,
+        _validate,
+        _reporter,
+    ):
+        runner = MagicMock()
+        runner.run_analysis.side_effect = [
+            {
+                "status": "completed",
+                "text": '{"answer_status":"answered","answer":"ok","findings":[]}',
+                "charts": [],
+                "error": "",
+                "code": "print('first')",
+                "attempts": 2,
+            },
+            {
+                "status": "completed",
+                "text": '{"answer_status":"answered","answer":"fixed","findings":[{"entity_id":"A1","reasons":["r"],"metrics":{}}]}',
+                "charts": ["/tmp/final.png"],
+                "error": "",
+                "code": "print('second')",
+                "attempts": 1,
+            },
+        ]
+        create_analysis_runner.return_value = runner
+        parse_ci_result.side_effect = [
+            ([], [], "answered", "ok", []),
+            ([MagicMock()], [], "answered", "fixed", []),
+        ]
+        attached_input = self._attached_input()
+
+        result = execute(self._plan(), attached_input=attached_input, max_retries=100)
+
+        self.assertEqual(runner.run_analysis.call_count, 2)
+        self.assertEqual(
+            runner.run_analysis.call_args_list[0].kwargs["file_paths"],
+            [attached_input.files[0].local_path],
+        )
+        self.assertEqual(runner.run_analysis.call_args_list[1].kwargs["max_retries"], 0)
+        self.assertEqual(result.code_generated, "print('second')")
+        self.assertEqual(result.charts, ["/tmp/final.png"])
+
+    @patch("agent.reporter.synthesize", return_value="summary")
+    @patch("agent.executor.validate_analysis_result", return_value=[])
+    @patch("agent.executor._parse_ci_result", return_value=([], [], "answered", "", []))
+    @patch("agent.runtime.runner_factory.create_analysis_runner")
+    def test_attached_runtime_failure_does_not_return_answered(
+        self,
+        create_analysis_runner,
+        _parse_ci_result,
+        _validate,
+        _reporter,
+    ):
+        runner = MagicMock()
+        runner.run_analysis.return_value = {
+            "status": "failed",
+            "text": "",
+            "charts": [],
+            "error": "Local Qwen execution failed",
+            "code": None,
+            "attempts": 1,
+        }
+        create_analysis_runner.return_value = runner
+
+        result = execute(self._plan(), attached_input=self._attached_input())
+
+        self.assertEqual(result.answer_status, "not_enough_data")
+        self.assertIn("Local Qwen execution failed", result.errors)
+
     @patch("agent.executor._execute_legacy", side_effect=AssertionError("legacy should not run"))
     def test_general_execute_without_dataset_returns_not_enough_data(self, _legacy):
         result = execute(self._general_plan())

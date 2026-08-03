@@ -4,7 +4,6 @@ import json
 import os
 import re
 import shutil
-import stat
 import subprocess
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -21,6 +20,8 @@ MAX_RESULT_JSON_BYTES = 5 * 1024 * 1024
 MAX_PNG_COUNT = 10
 MAX_PNG_BYTES = 20 * 1024 * 1024
 SAFE_BASENAME_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
+SANDBOX_UID = 10001
+SANDBOX_GID = 10001
 
 
 @dataclass(frozen=True)
@@ -373,6 +374,8 @@ class DockerSandbox:
             self.config.cpu_limit,
             "--tmpfs",
             "/tmp:rw,nosuid,nodev,size=512m",
+            "--user",
+            f"{SANDBOX_UID}:{SANDBOX_GID}",
             "-v",
             f"{input_dir.resolve()}:/mnt/data:ro",
             "-v",

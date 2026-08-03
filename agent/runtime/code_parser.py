@@ -30,6 +30,8 @@ BANNED_CALLS = {
     "input",
     "os.system",
     "os.popen",
+    "pathlib.Path.rmdir",
+    "pathlib.Path.unlink",
     "subprocess.Popen",
     "subprocess.call",
     "subprocess.check_call",
@@ -39,10 +41,6 @@ BANNED_CALLS = {
 }
 BANNED_CALL_PREFIXES = {
     "os.spawn",
-}
-BANNED_METHODS = {
-    "unlink",
-    "rmdir",
 }
 
 
@@ -86,6 +84,19 @@ def _validate_ast(tree: ast.AST) -> None:
             return mapped_root
         return ".".join([mapped_root, *parts[1:]])
 
+    def resolve_pathlib_method_name(node: ast.Call) -> str | None:
+        func = node.func
+        if not isinstance(func, ast.Attribute):
+            return None
+        owner_name = resolve_alias(_resolve_call_name(func.value))
+        if owner_name == "pathlib.Path":
+            return f"pathlib.Path.{func.attr}"
+        if isinstance(func.value, ast.Call):
+            constructor_name = resolve_alias(_resolve_call_name(func.value.func))
+            if constructor_name == "pathlib.Path":
+                return f"pathlib.Path.{func.attr}"
+        return None
+
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
@@ -102,12 +113,13 @@ def _validate_ast(tree: ast.AST) -> None:
                 raise GeneratedCodeError(f"Forbidden import detected: {module}")
         elif isinstance(node, ast.Call):
             call_name = resolve_alias(_resolve_call_name(node.func))
+            pathlib_method_name = resolve_pathlib_method_name(node)
+            if pathlib_method_name:
+                call_name = pathlib_method_name
             if call_name in BANNED_CALLS:
                 raise GeneratedCodeError(f"Forbidden call detected: {call_name}")
             if call_name and any(call_name.startswith(prefix) for prefix in BANNED_CALL_PREFIXES):
                 raise GeneratedCodeError(f"Forbidden call detected: {call_name}")
-            if isinstance(node.func, ast.Attribute) and node.func.attr in BANNED_METHODS:
-                raise GeneratedCodeError(f"Forbidden call detected: {node.func.attr}")
 
 
 def _parse_candidate(candidate: str) -> str:

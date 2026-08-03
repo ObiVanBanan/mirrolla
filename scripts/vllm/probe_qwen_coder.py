@@ -2,9 +2,14 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import time
 from pathlib import Path
 from urllib import error, request
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from agent.runtime.code_parser import GeneratedCodeError, extract_python_code
 
@@ -12,7 +17,7 @@ from agent.runtime.code_parser import GeneratedCodeError, extract_python_code
 DEFAULT_BASE_URL = os.getenv("LOCAL_LLM_BASE_URL", "http://127.0.0.1:8010/v1")
 DEFAULT_MODEL = os.getenv("LOCAL_LLM_MODEL", "qwen-coder-local")
 DEFAULT_API_KEY = os.getenv("LOCAL_LLM_API_KEY", "mirrolla-local")
-OUTPUT_PATH = Path("data/runtime/model_probe.json")
+OUTPUT_PATH = PROJECT_ROOT / "data/runtime/model_probe.json"
 
 
 def _headers() -> dict[str, str]:

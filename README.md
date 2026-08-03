@@ -50,7 +50,7 @@ export EXECUTION_BACKEND=local_qwen
 uvicorn api.main:app --host 127.0.0.1 --port 8000
 ```
 
-`docker compose` сейчас не является поддержанным способом запуска `local_qwen` без отдельного execution-сервиса: безопасный mount Docker socket в основной контейнер не добавлялся. Для compose-режима используйте `EXECUTION_BACKEND=openai_ci`, либо выносите sandbox execution в отдельный сервис с собственным API.
+`local_qwen` sandbox из API-контейнера пока не поддерживается без отдельного Docker execution service. Для compose-режима используйте `EXECUTION_BACKEND=openai_ci`, либо выносите sandbox execution в отдельный сервис с собственным API.
 
 ## Безопасность local_qwen
 
@@ -208,7 +208,7 @@ mirrolla/
 
 | Переменная | Назначение | Дефолт |
 |------------|------------|--------|
-| `token` | OpenAI API key для router/planner/reporter и для `openai_ci` executor | обязателен для `openai_ci`, опционален для полностью локального execution |
+| `token` | Router, Planner, Reporter, `openai_ci` только при `EXECUTION_BACKEND=openai_ci` | обязателен для `openai_ci`, опционален для полностью локального execution |
 | `EXECUTION_BACKEND` | `local_qwen` или `openai_ci` | `local_qwen` |
 | `LOCAL_LLM_BASE_URL` | OpenAI-compatible vLLM endpoint | `http://127.0.0.1:8010/v1` |
 | `LOCAL_LLM_API_KEY` | API key локального vLLM | `mirrolla-local` |
@@ -217,11 +217,11 @@ mirrolla/
 | `LOCAL_LLM_MAX_TOKENS` | Верхняя граница генерации кода | `2500` |
 | `LOCAL_LLM_MAX_PROMPT_CHARS` | Лимит prompt перед compact/reject | `22000` |
 | `LOCAL_LLM_TEMPERATURE` | Температура для генерации кода | `0.1` |
-| `LOCAL_SANDBOX_IMAGE` | Docker image для sandbox execution | `mirrolla-analysis-sandbox:latest` |
+| `LOCAL_SANDBOX_IMAGE` | Docker image для sandbox execution | `mirrolla-analysis-sandbox:py312` |
 | `LOCAL_SANDBOX_TIMEOUT_SECONDS` | Timeout sandbox execution | `180` |
-| `LOCAL_SANDBOX_MEMORY` | Лимит памяти контейнера | `2g` |
-| `LOCAL_SANDBOX_CPUS` | Лимит CPU контейнера | `1.0` |
-| `LOCAL_SANDBOX_PIDS_LIMIT` | Лимит процессов в контейнере | `256` |
+| `LOCAL_SANDBOX_MEMORY` | Лимит памяти контейнера | `4g` |
+| `LOCAL_SANDBOX_CPUS` | Лимит CPU контейнера | `2` |
+| `LOCAL_SANDBOX_PIDS_LIMIT` | Лимит процессов в контейнере | `128` |
 | `LOCAL_SANDBOX_ROOT` | Корень runtime-артефактов sandbox | `.runtime/local-executor` |
 | `LOCAL_SANDBOX_KEEP_RUNS` | Не удалять runtime-папки после запуска | `0` |
 | `MIRROLLA_API` | URL API для авто-отчёта | `http://127.0.0.1:8000/api/v1` |

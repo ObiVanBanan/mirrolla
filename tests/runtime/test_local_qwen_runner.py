@@ -121,6 +121,7 @@ def test_local_qwen_runner_repairs_after_sandbox_error(tmp_path: Path) -> None:
     assert result["status"] == "completed"
     assert result["attempts"] == 2
     assert "Previous attempt failed" in llm.calls[1][1]
+    assert "exit_code=1" in llm.calls[1][1]
 
 
 def test_local_qwen_runner_fails_when_result_json_missing(tmp_path: Path) -> None:
@@ -154,7 +155,7 @@ def test_local_qwen_runner_repairs_invalid_result_payload(tmp_path: Path) -> Non
 
     assert result["status"] == "completed"
     assert result["attempts"] == 2
-    assert "Previous attempt failed" in llm.calls[1][1]
+    assert "Validator errors" in llm.calls[1][1]
 
 
 def test_local_qwen_runner_returns_charts_and_last_code(tmp_path: Path) -> None:
@@ -174,6 +175,7 @@ def test_local_qwen_runner_returns_charts_and_last_code(tmp_path: Path) -> None:
     assert len(result["charts"]) == 1
     assert result["charts"][0].endswith("chart.png")
     assert result["code"] == "print('chart')"
+    assert "data/charts" in result["charts"][0].replace("\\", "/")
 
 
 def test_local_qwen_runner_rejects_empty_file_list() -> None:
@@ -217,6 +219,61 @@ def test_local_qwen_runner_negative_retries_use_single_attempt(tmp_path: Path) -
     result = runner.run_analysis("count rows", [_input_file(tmp_path)], max_retries=-1)
 
     assert result["attempts"] == 1
+
+
+def test_local_qwen_runner_fails_when_prompt_cannot_be_compacted(tmp_path: Path) -> None:
+    llm = _FakeLLM([])
+    sandbox = _FakeSandbox([])
+    llm.config.max_prompt_chars = 4000
+    runner = LocalQwenRunner(llm_client=llm, sandbox=sandbox)
+    prompt = "\n\n".join(
+        [
+            "## Question\n" + ("Q" * 5000),
+            "## Attached execution manifest\nM",
+            "## Attached datasets for this analysis\nD",
+            "## Hypotheses to validate\nH",
+            "## Critical rules\nR",
+            "## Output format\nO",
+        ]
+    )
+
+    result = runner.run_analysis(prompt, [_input_file(tmp_path)])
+
+    assert result["status"] == "failed"
+    assert result["attempts"] == 0
+    assert "too large" in result["error"].lower()
+
+
+def test_local_qwen_runner_uses_exact_sandbox_paths_in_prompt(tmp_path: Path) -> None:
+    llm = _FakeLLM(["```python\nprint('ok')\n```"])
+    sandbox = _FakeSandbox([
+        _sandbox_result(result={"answer_status": "answered", "answer": "ok", "findings": []}),
+    ])
+    runner = LocalQwenRunner(llm_client=llm, sandbox=sandbox)
+
+    runner.run_analysis("count rows", [_input_file(tmp_path)])
+
+    assert "- /mnt/data/a.csv" in llm.calls[0][1]
+
+
+def test_local_qwen_runner_truncates_diagnostics_to_last_stdout_lines(tmp_path: Path) -> None:
+    llm = _FakeLLM([
+        "```python\nprint('first')\n```",
+        "```python\nprint('second')\n```",
+    ])
+    stdout_text = "\n".join(f"line-{index}" for index in range(60))
+    sandbox = _FakeSandbox([
+        _sandbox_result(status="failed", error="boom", stdout=stdout_text, stderr="stderr message"),
+        _sandbox_result(result={"answer_status": "answered", "answer": "ok", "findings": []}),
+    ])
+    runner = LocalQwenRunner(llm_client=llm, sandbox=sandbox)
+
+    result = runner.run_analysis("count rows", [_input_file(tmp_path)])
+
+    assert result["status"] == "completed"
+    repair_prompt = llm.calls[1][1]
+    assert "line-59" in repair_prompt
+    assert "line-0" not in repair_prompt
 
 
 def test_compact_execution_prompt_reduces_optional_sections() -> None:

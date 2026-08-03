@@ -69,6 +69,80 @@ def _runtime_failed(ci_result: dict) -> bool:
     return ci_result.get("status") != "completed" or not ci_result.get("text")
 
 
+def _build_validation_retry_prompt(base_prompt: str, validation_errors: list[str]) -> str:
+    errors_block = "\n".join(f"- {error}" for error in validation_errors)
+    return (
+        f"{base_prompt}\n\n"
+        "## Validation repair\n"
+        "Предыдущий результат не прошёл validator.\n"
+        "Верни полный исправленный Python-скрипт.\n"
+        "Не возвращай diff.\n"
+        "Не меняй input paths.\n"
+        "Не меняй result.json contract.\n\n"
+        "Validator errors:\n"
+        f"{errors_block}\n"
+    )
+
+
+def _run_with_validation_retry(
+    *,
+    runner,
+    prompt: str,
+    file_paths: list[str],
+    max_retries: int,
+    plan: AnalysisPlan,
+) -> tuple[dict, list[str]]:
+    errors: list[str] = []
+    normalized_retries = _normalize_execution_retries(max_retries)
+
+    try:
+        ci_result = runner.run_analysis(
+            prompt=prompt,
+            file_paths=file_paths,
+            max_retries=normalized_retries,
+        )
+    except Exception as exc:
+        message = f"CI error: {exc}"
+        return {
+            "status": "failed",
+            "text": "",
+            "charts": [],
+            "error": str(exc),
+            "code": None,
+            "attempts": 0,
+        }, [message]
+
+    if ci_result.get("error"):
+        errors.append(ci_result["error"])
+
+    parsed_for_validation = _extract_json_from_text(ci_result.get("text", ""))
+    validation_errors = validate_analysis_result(
+        parsed_for_validation or {},
+        plan.skill.value if plan.skill is not None else None,
+        plan.analysis_mode,
+    )
+    if not validation_errors:
+        return ci_result, errors
+
+    remaining_attempts = max(3 - int(ci_result.get("attempts", 0) or 0), 0)
+    if remaining_attempts <= 0:
+        return ci_result, errors
+
+    try:
+        retry_result = runner.run_analysis(
+            prompt=_build_validation_retry_prompt(prompt, validation_errors),
+            file_paths=file_paths,
+            max_retries=max(remaining_attempts - 1, 0),
+        )
+    except Exception as exc:
+        errors.append(f"Validation retry failed: {exc}")
+        return ci_result, errors
+
+    if retry_result.get("error"):
+        errors.append(retry_result["error"])
+    return retry_result, errors
+
+
 # === Файлы данных для загрузки в Code Interpreter ===
 
 def _collect_data_files(plan: AnalysisPlan) -> list[str]:
@@ -764,22 +838,15 @@ def _execute_legacy(plan: AnalysisPlan, max_retries: int = 2) -> ExecutionResult
     errors = []
     limitations = list(plan.limitations)
     charts = []
-    normalized_max_retries = _normalize_execution_retries(max_retries)
-
     runner = _create_runner()
-    try:
-        ci_result = runner.run_analysis(
-            prompt=prompt,
-            file_paths=file_paths,
-            max_retries=normalized_max_retries,  # self-correction через previous_response_id
-        )
-    except Exception as e:
-        print(f"  [Executor] ❌ CI ошибка: {e}")
-        ci_result = {"status": "failed", "error": str(e), "text": "", "charts": []}
-        errors.append(f"CI error: {e}")
-
-    if ci_result.get("error"):
-        errors.append(ci_result["error"])
+    ci_result, run_errors = _run_with_validation_retry(
+        runner=runner,
+        prompt=prompt,
+        file_paths=file_paths,
+        max_retries=max_retries,
+        plan=plan,
+    )
+    errors.extend(run_errors)
 
     print(f"  [Executor] ✅ CI выполнен (status={ci_result.get('status')})")
 
@@ -800,40 +867,9 @@ def _execute_legacy(plan: AnalysisPlan, max_retries: int = 2) -> ExecutionResult
         print(f"  [Executor] ⚠ Валидация: {len(validation_errors)} ошибок")
         for ve in validation_errors:
             print(f"     - {ve}")
-        # Если findings пустой для list-вопроса — retry через ci_runner self-correction
-        if not findings and plan.skill is not None and plan.skill.value in LIST_RESULT_SKILLS and not ci_result.get("_validated_retry"):
-            print(f"  [Executor] → retry с указанием ошибок валидации...")
-            correction = (
-                f"Результат не прошёл валидацию:\n{json.dumps(validation_errors, ensure_ascii=False)}\n"
-                "Исправь: верни findings с конкретными товарами (entity_id, reasons, metrics). "
-                "Не возвращай пустой findings."
-            )
-            remaining_attempts = max(3 - int(ci_result.get("attempts", 0) or 0), 0)
-            # Дополнительный retry через предыдущий run
-            try:
-                ci_result2 = runner.run_analysis(
-                    prompt=prompt
-                    + "\n\n## Validation repair\n"
-                    + "The previous execution returned an invalid analytical payload.\n"
-                    + "Return a corrected result that satisfies the JSON contract.\n"
-                    + f"{correction}",
-                    file_paths=file_paths,
-                    max_retries=max(remaining_attempts - 1, 0),
-                )
-                if ci_result2.get("text"):
-                    findings2, hyps2, status2, answer2, lims2 = _parse_ci_result(ci_result2, plan)
-                    if findings2:
-                        print(f"  [Executor] ✅ Retry дал {len(findings2)} findings")
-                        ci_result = ci_result2
-                        findings = findings2
-                        hypothesis_results = hyps2
-                        answer_status = status2
-                        answer = answer2
-                        if lims2:
-                            extra_lim = lims2
-                        charts = ci_result2.get("charts", [])
-            except Exception as retry_err:
-                print(f"  [Executor] ⚠ Retry failed: {retry_err}")
+        limitations.append("Validation issues: " + "; ".join(validation_errors))
+        if answer_status == "answered":
+            answer_status = "partial"
     else:
         print(f"  [Executor] ✅ Валидация пройдена")
     if extra_lim:
@@ -877,6 +913,7 @@ def _execute_legacy(plan: AnalysisPlan, max_retries: int = 2) -> ExecutionResult
         hypothesis_results=hypothesis_results,
         charts=charts,
         summary=manager_answer,  # ответ от Reporter LLM (не CI answer)
+        answer=manager_answer,
         limitations=limitations,
         code_generated=ci_result.get("code"),
         errors=errors,
@@ -1127,19 +1164,18 @@ def _execute_attached(
     _validate_attached_execution_input(plan, attached_input)
     prompt = _build_attached_prompt(plan, attached_input.manifest)
     runner = _create_runner()
-    errors: list[str] = []
+    ci_result, errors = _run_with_validation_retry(
+        runner=runner,
+        prompt=prompt,
+        file_paths=[item.local_path for item in attached_input.files],
+        max_retries=max_retries,
+        plan=plan,
+    )
     limitations = list(plan.limitations)
     execution_metadata = _build_execution_metadata(
         attached_input.manifest,
         attached_input.analysis_id,
     )
-    ci_result = runner.run_analysis(
-        prompt=prompt,
-        file_paths=[item.local_path for item in attached_input.files],
-        max_retries=_normalize_execution_retries(max_retries),
-    )
-    if ci_result.get("error"):
-        errors.append(ci_result["error"])
 
     findings, hypothesis_results, answer_status, answer, extra_lim = _parse_ci_result(ci_result, plan)
     limitations.extend(extra_lim)
@@ -1237,7 +1273,7 @@ def main():
     # Шаг 1: Plan
     print("\n--- Шаг 1: Planner ---")
     analysis_plan = generate_plan(question)
-    print(f"Skill: {analysis_plan.skill.value if analysis_plan.skill is not None else "none"}")
+    print(f"Skill: {analysis_plan.skill.value if analysis_plan.skill is not None else 'none'}")
     print(f"Гипотез: {len(analysis_plan.hypotheses)}")
 
     # Шаг 2: Execute
